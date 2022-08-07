@@ -1,3 +1,26 @@
+Changes to the original TouchDesigner repo:
+* GeneratorSOP: added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP. NB! This one is resource heavy so don't use too long input CHOP.
+* GeneratorSOP: added Voronoi shape generator - each input CHOP point becomes a new Voronoi cell
+* GeneratorSOP: added KDTree shape generator - build the KD-Tree using input CHOP points for 3D cube division
+* GeneratorSOP: Windows Visual Studio Release build is copying the DLL to TouchDesigner Plugins folder
+
+GeneratorSOP inputs:
+* 3 channel input CHOP, which will represent the coordinates of points that will be center cell points for Divider, Voronoi and KDTree
+* Scale - scale down each resulting cell
+* Spread - move each cell away from the center of the cube
+
+GeneratorSOP issues:
+* No normals! To be able to add normals to SOP plugin we (currently) must have vertexes per each face and can not share one vertex for several faces. However this is not good for resulting SOP modification. For example adding Noise SOP to a 3d cube with shared vertexes won't break the cube faces so they will not fall apart from each other. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
+* Don't have VBO variant for all new generators. Not sure if it's possible
+* Input CHOP data must be normalised from -1.0 to 1.0
+* Input CHOP data is not checked for 'same coordinates' points, which might cause strange behaviour
+
+Voro++ library is used to generate Voronoi shape
+https://math.lbl.gov/voro++/about.html
+
+
+Feel free to create pull requests or send feedback and ideas.
+----------------------------------------------------------------
 # Custom Operator Samples
 
 We hope these custom operators can be a starting point to developing for anybody including members of the community only beginning with c++ development.
@@ -51,7 +74,7 @@ For discussions around this repository, please use our [forum](https://forum.der
 * **DAT Family**
   * [FilterDAT](DAT/FilterDAT)
   * [GeneratorDAT](DAT/GeneratorDAT)
-  
+
 ## Compiling Custom Operators
 
 This text should be a small guide to getting started with compiling custom operators that can be found on github or elsewhere as pure source code. Often setting up your environment is the most difficult step followed by making accessible all libraries that might be necessary for successfully compiling other’s projects.
@@ -87,7 +110,7 @@ _For some of the projects a CUDA Development environment is required. Which vers
 
 ### Referencing openCV libraries
 
-_Some projects make use of various openCV modules. Which openCV release is required depends on the version used by the creator. Since TouchDesigner 2020.44130, openCV 4.5’s libraries are included in the TouchDesigner Installfolder at Samples\CPlusPlus\3rdParty_. The solutions using openCV require an environmental variable called **TOUCHDESIGNER_3RDPARTY_TOOLS_PATH** which should point to the before mentioned _3rdParty_ path. Before building, add this variable via Windows' _System Properties_ dialog. 
+_Some projects make use of various openCV modules. Which openCV release is required depends on the version used by the creator. Since TouchDesigner 2020.44130, openCV 4.5’s libraries are included in the TouchDesigner Installfolder at Samples\CPlusPlus\3rdParty_. The solutions using openCV require an environmental variable called **TOUCHDESIGNER_3RDPARTY_TOOLS_PATH** which should point to the before mentioned _3rdParty_ path. Before building, add this variable via Windows' _System Properties_ dialog.
 
 ![alt_text](images/image10.png "system variabes")
 
@@ -95,14 +118,14 @@ _Some projects make use of various openCV modules. Which openCV release is requi
 
 If you want to use a different openCV version, you can follow these instructions. If you additionally need CUDA support, follow instructions [below](#Compiling-openCV-with-CUDA-support) to compile openCV with CUDA support.
 
-*   Download the precompiled version of the openCV windows libraries from here: [https://github.com/opencv/opencv/releases](https://github.com/opencv/opencv/releases) - there are self extracting archives available 
+*   Download the precompiled version of the openCV windows libraries from here: [https://github.com/opencv/opencv/releases](https://github.com/opencv/opencv/releases) - there are self extracting archives available
 *   Extract to a location on your computer
 *   After loading a project in Visual Studio, open the Project’s Properties via the Project>Properties or by hitting Alt+F7
 *   In the Configuration Properties, navigate to C/C++ and edit the “Additional Include Directories” to include the path to the folder containing the openCV libraries
 
 ![alt_text](images/image2.png "image_tooltip")
 
-*   Still in the Configuration Properties, navigate to Linker and edit the “Additional Library Directories” to include the path to the folder containing the openCV libraries. 
+*   Still in the Configuration Properties, navigate to Linker and edit the “Additional Library Directories” to include the path to the folder containing the openCV libraries.
 
 ![alt_text](images/image9.png "openCV Linker")
 
@@ -149,7 +172,7 @@ set "generator=Visual Studio 16 2019"
 *   open the OpenCV.sln in Visual Studio
 *   In the **Solution Explorer**, expand **CMakeTargets** and right click on **Install**, selecting **Build**
 
-**Note:** During the process of generating the build files with CMake, an error can occur when running on a ExFAT filesystem: 
+**Note:** During the process of generating the build files with CMake, an error can occur when running on a ExFAT filesystem:
 
 ```
 CMake Error: Problem extracting tar: e:/git/opencv/.cache/ippicv/879741a7946b814455eee6c6ffde2984-ippicv_2020_win_intel64_20191018_general.zip
@@ -163,7 +186,7 @@ This can be resolved by using 7zip as explained here: [https://stackoverflow.com
 
 Projects in this repositroy are setup to support all previous and future gpu hardware by compiling for virtual support for any pre pascal hardware and any post turing hardware. To make changes to this configuration:
 
-*   In the Configuration Properties, navigate to CUDA C/C++ and edit the “Code Generation” entry to include all NVIDIA architectures to compile code for. 
+*   In the Configuration Properties, navigate to CUDA C/C++ and edit the “Code Generation” entry to include all NVIDIA architectures to compile code for.
 *   For a reference on GPU compilation and virtual as well as gpu features, please refer to [https://docs.nvidia.com/cuda/archive/10.2/cuda-compiler-driver-nvcc/index.html#virtual-architectures](https://docs.nvidia.com/cuda/archive/10.2/cuda-compiler-driver-nvcc/index.html#virtual-architectures)
 *   For best performance, when omitting older architectures, specify _compute_xx,compute_xx_ for each omitted architecture. To support all future architecture, also add an additional _compute_xx,compute_xx_ entry for the newest architecture. Here _xx_ is referring to the 2 digit hardware architecture identifier.
 

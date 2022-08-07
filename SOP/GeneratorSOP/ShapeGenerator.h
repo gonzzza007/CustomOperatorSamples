@@ -16,6 +16,7 @@
 #define __ShapeGenerator__
 
 #include <array>
+#include <vector>
 #include "CPlusPlus_Common.h"
 #include "SOP_CPlusPlusBase.h"
 
@@ -30,6 +31,21 @@ public:
 	void	outputSquare(TD::SOP_Output*) const;
 
 	void	outputCube(TD::SOP_Output*) const;
+
+	void	outputDivider(const	OP_CHOPInput*,
+											float,
+											float,
+											SOP_Output*) const;
+
+	void	outputVoronoi(const	OP_CHOPInput*, 
+										  float,
+											float,
+											SOP_Output*) const;
+
+	void	outputKDTree(const	OP_CHOPInput*,
+										 float,
+										 float,
+										 SOP_Output*) const;
 
 	// Output the shape directly to the GPU
 	void	outputDotVBO(TD::SOP_VBOOutput*);
@@ -47,6 +63,7 @@ private:
 	void	setPointTexCoords(TD::SOP_Output*, const TD::TexCoord* t, int numPts) const;
 
 	// Cube descriptors 32 points 3 per  vertex
+	constexpr static int									theCubeNumPts8 = 8;
 	constexpr static int									theCubeNumPts = 24;
 	constexpr static int									theCubeNumPrim = 12;
 	const static std::array<TD::Position, theCubeNumPts>		theCubePos;
@@ -76,6 +93,13 @@ private:
 
 	// LastVBO allocation
 	int myLastVBOAllocVertices;
+
+	// KDTree cubes
+	struct theCube {
+		int level;
+		Position center;
+		std::array<Position, 8> coords;
+	};
 };
 
 #endif
