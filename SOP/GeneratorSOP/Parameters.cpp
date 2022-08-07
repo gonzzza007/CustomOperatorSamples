@@ -10,7 +10,25 @@ using namespace TD;
 ShapeMenuItems
 Parameters::evalShape(const TD::OP_Inputs* input)
 {
-	return static_cast<ShapeMenuItems>(input->getParInt(ShapeName));
+	ShapeMenuItems value = static_cast<ShapeMenuItems>(input->getParInt(ShapeName));
+
+	switch (value)
+	{
+	case ShapeMenuItems::Divider:
+	case ShapeMenuItems::Voronoi:
+	case ShapeMenuItems::KDTree:
+		input->enablePar(ScaleName, true);
+		input->enablePar(SpreadName, true);
+		input->enablePar(PointsChopName, true);
+		break;
+	default:
+		input->enablePar(ScaleName, false);
+		input->enablePar(SpreadName, false);
+		input->enablePar(PointsChopName, false);
+		break;
+	}
+		
+	return value;
 }
 
 Color
@@ -27,6 +45,26 @@ Parameters::evalGpudirect(const TD::OP_Inputs* input)
 	return input->getParInt(GpudirectName) ? true : false;
 }
 
+double
+Parameters::evalScale(const TD::OP_Inputs* input)
+{
+	return input->getParDouble(ScaleName);
+}
+
+double
+Parameters::evalSpread(const TD::OP_Inputs* input)
+{
+	return input->getParDouble(SpreadName);
+}
+
+const OP_CHOPInput*
+Parameters::evalPointschop(const TD::OP_Inputs* input)
+{
+	return input->getParCHOP(PointsChopName);
+}
+
+
+
 
 #pragma endregion
 
@@ -35,25 +73,32 @@ Parameters::evalGpudirect(const TD::OP_Inputs* input)
 void
 Parameters::setup(TD::OP_ParameterManager* manager)
 {
+	
 	{
 		OP_StringParameter p;
 		p.name = ShapeName;
 		p.label = ShapeLabel;
 		p.page = "Generator";
-		p.defaultValue = "Cube";
-		std::array<const char*, 4> Names =
+		p.defaultValue = "Point";
+		std::array<const char*, 7> Names =
 		{
 			"Point",
 			"Line",
 			"Square",
-			"Cube"
+			"Cube",
+			"Divider",
+			"Voronoi",
+			"KDTree"
 		};
-		std::array<const char*, 4> Labels =
+		std::array<const char*, 7> Labels =
 		{
 			"Point",
 			"Line",
 			"Square",
-			"Cube"
+			"Cube",
+			"Divider",
+			"Voronoi",
+			"KDTree"
 		};
 		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());
 
@@ -101,6 +146,55 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 
 		assert(res == OP_ParAppendResult::Success);
 	}
+
+	{
+		OP_StringParameter p;
+		p.name = PointsChopName;
+		p.label = PointsChopLabel;
+		p.page = "Generator";
+		p.defaultValue = "";
+
+		OP_ParAppendResult res = manager->appendCHOP(p);
+
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	{
+		OP_NumericParameter p;
+		p.name = ScaleName;
+		p.label = ScaleLabel;
+		p.page = "Generator";
+		p.defaultValues[0] = 1.0;
+		p.minSliders[0] = 0.01;
+		p.maxSliders[0] = 1.0;
+		p.minValues[0] = 0.01;
+		p.maxValues[0] = 1.0;
+		p.clampMins[0] = true;
+		p.clampMaxes[0] = true;
+
+		OP_ParAppendResult res = manager->appendFloat(p);
+
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	{
+		OP_NumericParameter p;
+		p.name = SpreadName;
+		p.label = SpreadLabel;
+		p.page = "Generator";
+		p.defaultValues[0] = 0.0;
+		p.minSliders[0] = 0.0;
+		p.maxSliders[0] = 100.0;
+		p.minValues[0] = 0.0;
+		p.maxValues[0] = 1000;
+		p.clampMins[0] = true;
+		p.clampMaxes[0] = true;
+
+		OP_ParAppendResult res = manager->appendFloat(p);
+
+		assert(res == OP_ParAppendResult::Success);
+	}
+
 
 
 }
