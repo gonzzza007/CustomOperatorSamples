@@ -315,9 +315,6 @@ ShapeGenerator::outputDivider(const	OP_CHOPInput* input,
 	float prevYPos(-1.0);
 	float prevZPos(-1.0);
 
-	bool nextX(false);
-	bool nextY(false);
-
 	for (const float &xPosIt : xPos) {		
 		if (prevXPos == xPosIt) continue;
 		
@@ -326,22 +323,6 @@ ShapeGenerator::outputDivider(const	OP_CHOPInput* input,
 			
 			for (const float &zPosIt : zPos) {	
 				if (prevZPos == zPosIt) continue;
-				
-				// if we switched to the first X in the next Y row,
-				// we have to use minimal Y coordinate, not the Y
-				// from the last box in previous row :)
-				if (nextX) {
-					nextX = false;
-					prevYPos = minYPos;
-				}
-
-				// if we switched to the first Y in the next Z row,
-				// we have to use minimal Z coordinate, not the Z
-				// from the last box in previous row :)
-				if (nextY) {
-					nextY = false;
-					prevZPos = minZPos;
-				}
 
 				Position center = {
 					(prevXPos + xPosIt) / 2,
@@ -377,11 +358,11 @@ ShapeGenerator::outputDivider(const	OP_CHOPInput* input,
 
 				prevZPos = zPosIt;
 			}
-			prevYPos = yPosIt;
-			nextY = true;
+			prevYPos = yPosIt; // previous Y value
+			prevZPos = minZPos; // next Z row
 		}
-		prevXPos = xPosIt;
-		nextX = true;
+		prevXPos = xPosIt; // previous X value
+		prevYPos = minYPos; // next Y row
 	}
 }
 
