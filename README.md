@@ -1,8 +1,19 @@
-Changes to the original TouchDesigner repo:
-* GeneratorSOP: added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP. NB! This one is resource heavy so don't use too long input CHOP.
-* GeneratorSOP: added Voronoi shape generator - each input CHOP point becomes a new Voronoi cell
-* GeneratorSOP: added KDTree shape generator - build the KD-Tree using input CHOP points for 3D cube division
-* GeneratorSOP: Windows Visual Studio Release build is copying the DLL to TouchDesigner Plugins folder
+# Changes to the original TouchDesigner repo:
+
+## AlphaShapesSOP
+Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL, Computational Geometry Algorithms Library, https://www.cgal.org
+
+* **NB!** Windows Visual Studio Release build is copying the DLL to TouchDesigner Plugins folder
+
+AlphaShapesSOP issues:
+* No normals! To be able to add normals to SOP plugin we can not share vertexes between faces. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
+
+## GeneratorSOP
+* added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP.
+* **NB!** Divider is resource heavy so don't use too long input CHOP.
+* added Voronoi shape generator - each input CHOP point becomes a new Voronoi cell. Voro++ library is used to generate Voronoi shape, https://math.lbl.gov/voro++/about.html
+* added KDTree shape generator - build the KD-Tree using input CHOP points for 3D cube division
+* **NB!** Windows Visual Studio Release build is copying the DLL to TouchDesigner Plugins folder
 
 GeneratorSOP inputs:
 * 3 channel input CHOP, which will represent the coordinates of points that will be center cell points for Divider, Voronoi and KDTree
@@ -10,14 +21,10 @@ GeneratorSOP inputs:
 * Spread - move each cell away from the center of the cube
 
 GeneratorSOP issues:
-* No normals! To be able to add normals to SOP plugin we (currently) must have vertexes per each face and can not share one vertex for several faces. However this is not good for resulting SOP modification. For example adding Noise SOP to a 3d cube with shared vertexes won't break the cube faces so they will not fall apart from each other. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
+* No normals! To be able to add normals to SOP plugin we can not share vertexes between faces. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
 * Don't have VBO variant for all new generators. Not sure if it's possible
 * Input CHOP data must be normalised from -1.0 to 1.0
 * Input CHOP data is not checked for 'same coordinates' points, which might cause strange behaviour
-
-Voro++ library is used to generate Voronoi shape
-https://math.lbl.gov/voro++/about.html
-
 
 Feel free to create pull requests or send feedback and ideas.
 ----------------------------------------------------------------
