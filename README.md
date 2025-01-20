@@ -1,4 +1,7 @@
 Changes to the original TouchDesigner repo:
+
+* AlphaShapesSOP: Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL, Computational Geometry Algorithms Library, https://www.cgal.org. More details in AlphaShapesSOP's folders readme.
+
 * GeneratorSOP: added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP. NB! This one is resource heavy so don't use too long input CHOP.
 * GeneratorSOP: added Voronoi shape generator - each input CHOP point becomes a new Voronoi cell
 * GeneratorSOP: added KDTree shape generator - build the KD-Tree using input CHOP points for 3D cube division
