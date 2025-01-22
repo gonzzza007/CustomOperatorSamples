@@ -1,12 +1,12 @@
 # Changes to the original TouchDesigner repo:
 
 ## AlphaShapesSOP
-Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL, Computational Geometry Algorithms Library, https://www.cgal.org
+Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL 6.0.1, Computational Geometry Algorithms Library, https://www.cgal.org
 
 * **NB!** Windows Visual Studio Release build is copying the DLL to TouchDesigner Plugins folder
 
 AlphaShapesSOP issues:
-* No normals! To be able to add normals to SOP plugin we can not share vertexes between faces. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
+* No normals! To be able to add normals we can not share vertexes between faces. Please use Facet SOP (unique points - ON, compute normals - ON)
 
 ## GeneratorSOP
 * added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP.
@@ -21,7 +21,7 @@ GeneratorSOP inputs:
 * Spread - move each cell away from the center of the cube
 
 GeneratorSOP issues:
-* No normals! To be able to add normals to SOP plugin we can not share vertexes between faces. To get the normals add Facet SOP (unique points - ON, compute normals - ON)
+* No normals! To be able to add normals we can not share vertexes between faces. Please use Facet SOP (unique points - ON, compute normals - ON)
 * Don't have VBO variant for all new generators. Not sure if it's possible
 * Input CHOP data must be normalised from -1.0 to 1.0
 * Input CHOP data is not checked for 'same coordinates' points, which might cause strange behaviour

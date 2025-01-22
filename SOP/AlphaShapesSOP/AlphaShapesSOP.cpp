@@ -71,7 +71,7 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	customInfo.authorEmail->setString("gonzzza@gmail.com");
 
 	customInfo.majorVersion = 0;
-	customInfo.minorVersion = 2;
+	customInfo.minorVersion = 3;
 
 	// This CHOP takes one input
 	customInfo.minInputs = 1;
@@ -126,28 +126,32 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 	const OP_SOPInput*	sop = inputs->getInputSOP(0);
 	if (!sop) return;
 
+	ModeMenuItems mode = myParms.evalMode(inputs);
 	bool useOptimalAlpha = myParms.evalUseOptimalAlpha(inputs);
+	bool skipInteriorPoints = myParms.evalSkipInteriorPoints(inputs);
 	double alpha = myParms.evalAlpha(inputs);
 
 
-
-	//------------------------------------------------------------------------------------------
 	std::list<Point> lp;
 	const Position* inPos = sop->getPointPositions();
 	for (int i = 0; i < sop->getNumPoints(); ++i) {
-		lp.push_back(Point(inPos[i].x, inPos[i].y, inPos[i].z));
+		lp.emplace_back(inPos[i].x, inPos[i].y, inPos[i].z);
 	}
 
 	// Alpha shape computed in REGULARIZED mode by default
 	Alpha_shape_3 as(lp.begin(), lp.end());
-
+	if (mode == ModeMenuItems::General) { 
+		as.set_mode(Alpha_shape_3::GENERAL);
+	}
 	
 	// search for optimal alpha value?
-	if (useOptimalAlpha) {
-		Alpha_iterator opt = as.find_optimal_alpha(1);
+	if (useOptimalAlpha) {	
+		Alpha_shape_3::NT alpha_solid = as.find_alpha_solid();
+		Alpha_shape_3::Alpha_iterator opt = as.find_optimal_alpha(1);
 		as.set_alpha(*opt);
-
+		
 		std::stringstream buffer;
+		buffer << std::endl << "Smallest alpha value to get a solid through data points is " << alpha_solid << std::endl;
 		buffer << "Optimal alpha value to get one connected component is " << *opt;
 		myWarningString = buffer.str();
 	
@@ -155,25 +159,23 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		as.set_alpha(alpha);
 	}
 	
-
-
 	std::unordered_map<Alpha_shape_3::Vertex_handle, size_t> vertex_map;
 	size_t idx = 0;
 	for (auto vit = as.vertices_begin(); vit != as.vertices_end(); ++vit) {
 		
-		// add point and remember the indexes 
-		if (as.classify(vit) != Alpha_shape_3::INTERIOR) { // Skip interior vertices
-			
-			Point zalupa = vit->point();
-			output->addPoint(TD::Position(
-				zalupa.x(),
-				zalupa.y(),
-				zalupa.z()
-			));
-
-			vertex_map[vit] = idx++;
-
-		}
+		// Skip interior points/vertices?
+		if (skipInteriorPoints && as.classify(vit) == Alpha_shape_3::INTERIOR)
+			continue;
+		
+		Point pt = vit->point();
+		output->addPoint(TD::Position(
+			pt.x(),
+			pt.y(),
+			pt.z()
+		));
+		
+		// remember point indexes
+		vertex_map[vit] = idx++;
 	}
 
 
