@@ -21,17 +21,22 @@
 #include <CGAL/Alpha_shape_3.h>
 #include <CGAL/Simple_cartesian.h>
 
-// #include <fstream>
-// #include <list>
-#include <cassert>
-
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel		Gt;
+//typedef CGAL::Tag_true                                        Alpha_cmp_tag;
+
 typedef CGAL::Alpha_shape_vertex_base_3<Gt>										Vb;
+//typedef CGAL::Alpha_shape_vertex_base_3<Gt, CGAL::Default, Alpha_cmp_tag>   Vb;
+
 typedef CGAL::Alpha_shape_cell_base_3<Gt>											Fb;
+//typedef CGAL::Alpha_shape_cell_base_3<Gt, CGAL::Default, Alpha_cmp_tag>     Fb;
+
 typedef CGAL::Triangulation_data_structure_3<Vb, Fb>					Tds;
 typedef CGAL::Delaunay_triangulation_3<Gt, Tds>								Triangulation_3;
-typedef CGAL::Alpha_shape_3<Triangulation_3>									Alpha_shape_3;
+
+typedef CGAL::Alpha_shape_3<Triangulation_3> 									Alpha_shape_3;
+//typedef CGAL::Alpha_shape_3<Triangulation_3, Alpha_cmp_tag> 	Alpha_shape_3;
+
 typedef Gt::Point_3																						Point;
 typedef Alpha_shape_3::Alpha_iterator													Alpha_iterator;
 
@@ -152,13 +157,14 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		
 		std::stringstream buffer;
 		buffer << std::endl << "Smallest alpha value to get a solid through data points is " << alpha_solid << std::endl;
-		buffer << "Optimal alpha value to get one connected component is " << *opt;
+		buffer << "Optimal alpha value to get one connected component is " << *opt << std::endl;
 		myWarningString = buffer.str();
 	
 	} else {
 		as.set_alpha(alpha);
 	}
 	
+	// save vertex indexes
 	std::unordered_map<Alpha_shape_3::Vertex_handle, size_t> vertex_map;
 	size_t idx = 0;
 	for (auto vit = as.vertices_begin(); vit != as.vertices_end(); ++vit) {
@@ -180,7 +186,6 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 
 
 	// Iterate through all facets (triangles)
-	std::vector<std::array<Point, 3>> facets;
 	for (Alpha_shape_3::Facet_iterator fit = as.facets_begin();
 		fit != as.facets_end(); ++fit) {
 		if (as.classify(*fit) == Alpha_shape_3::REGULAR) {
