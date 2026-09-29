@@ -76,7 +76,7 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	customInfo.authorEmail->setString("gonzzza@gmail.com");
 
 	customInfo.majorVersion = 0;
-	customInfo.minorVersion = 3;
+	customInfo.minorVersion = 4;
 
 	// This CHOP takes one input
 	customInfo.minInputs = 1;
