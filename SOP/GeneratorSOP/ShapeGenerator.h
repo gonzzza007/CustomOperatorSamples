@@ -63,16 +63,12 @@ private:
 	void	setPointTexCoords(TD::SOP_Output*, const TD::TexCoord* t, int numPts) const;
 
 	// Cube descriptors 32 points 3 per  vertex
-	constexpr static int									theCubeNumPts8 = 8;
 	constexpr static int									theCubeNumPts = 24;
 	constexpr static int									theCubeNumPrim = 12;
 	const static std::array<TD::Position, theCubeNumPts>		theCubePos;
 	const static std::array<TD::Vector, theCubeNumPts>			theCubeNormals;
 	const static std::array<int32_t, theCubeNumPrim * 3>	theCubeVertices;
 	const static std::array<TD::TexCoord, theCubeNumPts>		theCubeTexture;
-
-	const static std::array<TD::Position, theCubeNumPts8>		theCubePos8;
-	const static std::array<int32_t, theCubeNumPrim * 3>		theCubeVertices8;
 											
 	// Square descriptors
 	constexpr static int									theSquareNumPts = 4;
@@ -96,13 +92,6 @@ private:
 
 	// LastVBO allocation
 	int myLastVBOAllocVertices;
-
-	// KDTree cubes
-	struct theCube {
-		int level;
-		TD::Position center;
-		std::array<TD::Position, 8> coords;
-	};
 };
 
 #endif
