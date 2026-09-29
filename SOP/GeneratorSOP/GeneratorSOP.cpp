@@ -101,6 +101,22 @@ GeneratorSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 	float scale = myParms.evalScale(inputs);
 	float spread = myParms.evalSpread(inputs);
 
+	switch (shape)
+	{
+		case ShapeMenuItems::Divider:
+		case ShapeMenuItems::Voronoi:
+		case ShapeMenuItems::KDTree:
+			inputs->enablePar(ScaleName, true);
+			inputs->enablePar(SpreadName, true);
+			inputs->enablePar(PointsChopName, true);
+			break;
+		default:
+			inputs->enablePar(ScaleName, false);
+			inputs->enablePar(SpreadName, false);
+			inputs->enablePar(PointsChopName, false);
+			break;
+	}
+
 	const OP_CHOPInput* input = inputs->getParCHOP(PointsChopName);
 
 	switch (shape)
@@ -199,6 +215,22 @@ GeneratorSOP::executeVBO(SOP_VBOOutput* output, const TD::OP_Inputs* inputs, voi
 {
 	ShapeMenuItems shape = myParms.evalShape(inputs);
 	Color color = myParms.evalColor(inputs);
+
+	switch (shape)
+	{
+		case ShapeMenuItems::Divider:
+		case ShapeMenuItems::Voronoi:
+		case ShapeMenuItems::KDTree:
+			inputs->enablePar(ScaleName, true);
+			inputs->enablePar(SpreadName, true);
+			inputs->enablePar(PointsChopName, true);
+			break;
+		default:
+			inputs->enablePar(ScaleName, false);
+			inputs->enablePar(SpreadName, false);
+			inputs->enablePar(PointsChopName, false);
+			break;
+	}
 
 	output->enableColor();
 	output->enableNormal();

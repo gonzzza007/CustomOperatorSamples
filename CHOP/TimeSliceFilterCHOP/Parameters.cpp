@@ -1,21 +1,37 @@
+/* Shared Use License: This file is owned by Derivative Inc. (Derivative)
+* and can only be used, and/or modified for use, in conjunction with
+* Derivative's TouchDesigner software, and only if you are a licensee who has
+* accepted Derivative's TouchDesigner license or assignment agreement
+* (which also govern the use of this file). You may share or redistribute
+* a modified version of this file provided the following conditions are met:
+*
+* 1. The shared file or redistribution must retain the information set out
+* above and this list of conditions.
+* 2. Derivative's name (Derivative Inc.) or its trademarks may not be used
+* to endorse or promote products derived from this file without specific
+* prior written permission from Derivative.
+*/
+
+// Parameters.cpp generated using the cppParsTemplateGen Palette Component.
+// https://derivative.ca/UserGuide/Palette:cppParsTemplateGen
+
 #include <string>
 #include <array>
 #include "CPlusPlus_Common.h"
 #include "Parameters.h"
 
-
 #pragma region Evals
 
 OperationMenuItems
-Parameters::evalOperation(const TD::OP_Inputs* input)
+Parameters::evalOperation(const TD::OP_Inputs* inputs)
 {
-	return static_cast<OperationMenuItems>(input->getParInt(OperationName));
+	return static_cast<OperationMenuItems>(inputs->getParInt(OperationName));
 }
 
 int
-Parameters::evalReset(const TD::OP_Inputs* input)
+Parameters::evalReset(const TD::OP_Inputs* inputs)
 {
-	return input->getParInt(ResetName);
+	return inputs->getParInt(ResetName);
 }
 
 
@@ -27,7 +43,7 @@ void
 Parameters::setup(TD::OP_ParameterManager* manager)
 {
 	{
-		OP_StringParameter p;
+		TD::OP_StringParameter p;
 		p.name = OperationName;
 		p.label = OperationLabel;
 		p.page = "Filter";
@@ -44,19 +60,19 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			"Min",
 			"Average"
 		};
-		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());
+		TD::OP_ParAppendResult res = manager->appendMenu(p, Names.size(), Names.data(), Labels.data());
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = ResetName;
 		p.label = ResetLabel;
 		p.page = "Filter";
-		OP_ParAppendResult res = manager->appendPulse(p);
+		TD::OP_ParAppendResult res = manager->appendPulse(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 

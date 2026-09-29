@@ -1,3 +1,20 @@
+/* Shared Use License: This file is owned by Derivative Inc. (Derivative)
+* and can only be used, and/or modified for use, in conjunction with
+* Derivative's TouchDesigner software, and only if you are a licensee who has
+* accepted Derivative's TouchDesigner license or assignment agreement
+* (which also govern the use of this file). You may share or redistribute
+* a modified version of this file provided the following conditions are met:
+*
+* 1. The shared file or redistribution must retain the information set out
+* above and this list of conditions.
+* 2. Derivative's name (Derivative Inc.) or its trademarks may not be used
+* to endorse or promote products derived from this file without specific
+* prior written permission from Derivative.
+*/
+
+// Parameters.cpp generated using the cppParsTemplateGen Palette Component.
+// https://derivative.ca/UserGuide/Palette:cppParsTemplateGen
+
 #include <string>
 #include <array>
 #include "CPlusPlus_Common.h"
@@ -5,22 +22,20 @@
 
 #pragma region Evals
 
-using namespace TD;
-
-Color
-Parameters::evalInsidecolor(const TD::OP_Inputs* input)
+TD::Color
+Parameters::evalInsidecolor(const TD::OP_Inputs* inputs)
 {
 	std::array<double, 4> vals;
-	input->getParDouble4(InsidecolorName, vals[0], vals[1], vals[2], vals[3]);
-	return Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
+	inputs->getParDouble4(InsidecolorName, vals[0], vals[1], vals[2], vals[3]);
+	return TD::Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
 }
 
-Color
-Parameters::evalOutsidecolor(const TD::OP_Inputs* input)
+TD::Color
+Parameters::evalOutsidecolor(const TD::OP_Inputs* inputs)
 {
 	std::array<double, 4> vals;
-	input->getParDouble4(OutsidecolorName, vals[0], vals[1], vals[2], vals[3]);
-	return Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
+	inputs->getParDouble4(OutsidecolorName, vals[0], vals[1], vals[2], vals[3]);
+	return TD::Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
 }
 
 
@@ -32,7 +47,7 @@ void
 Parameters::setup(TD::OP_ParameterManager* manager)
 {
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = InsidecolorName;
 		p.label = InsidecolorLabel;
 		p.page = "Intersection";
@@ -56,13 +71,13 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			p.clampMins[i] = ClampMins[i];
 			p.clampMaxes[i] = ClampMaxes[i];
 		}
-		OP_ParAppendResult res = manager->appendRGBA(p);
+		TD::OP_ParAppendResult res = manager->appendRGBA(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = OutsidecolorName;
 		p.label = OutsidecolorLabel;
 		p.page = "Intersection";
@@ -86,9 +101,9 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			p.clampMins[i] = ClampMins[i];
 			p.clampMaxes[i] = ClampMaxes[i];
 		}
-		OP_ParAppendResult res = manager->appendRGBA(p);
+		TD::OP_ParAppendResult res = manager->appendRGBA(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 

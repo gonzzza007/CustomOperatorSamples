@@ -1,3 +1,20 @@
+/* Shared Use License: This file is owned by Derivative Inc. (Derivative)
+* and can only be used, and/or modified for use, in conjunction with
+* Derivative's TouchDesigner software, and only if you are a licensee who has
+* accepted Derivative's TouchDesigner license or assignment agreement
+* (which also govern the use of this file). You may share or redistribute
+* a modified version of this file provided the following conditions are met:
+*
+* 1. The shared file or redistribution must retain the information set out
+* above and this list of conditions.
+* 2. Derivative's name (Derivative Inc.) or its trademarks may not be used
+* to endorse or promote products derived from this file without specific
+* prior written permission from Derivative.
+*/
+
+// Parameters.cpp generated using the cppParsTemplateGen Palette Component.
+// https://derivative.ca/UserGuide/Palette:cppParsTemplateGen
+
 #include <string>
 #include <array>
 #include "CPlusPlus_Common.h"
@@ -5,44 +22,24 @@
 
 #pragma region Evals
 
-using namespace TD;
-
 ShapeMenuItems
-Parameters::evalShape(const TD::OP_Inputs* input)
+Parameters::evalShape(const TD::OP_Inputs* inputs)
 {
-	ShapeMenuItems value = static_cast<ShapeMenuItems>(input->getParInt(ShapeName));
-
-	switch (value)
-	{
-	case ShapeMenuItems::Divider:
-	case ShapeMenuItems::Voronoi:
-	case ShapeMenuItems::KDTree:
-		input->enablePar(ScaleName, true);
-		input->enablePar(SpreadName, true);
-		input->enablePar(PointsChopName, true);
-		break;
-	default:
-		input->enablePar(ScaleName, false);
-		input->enablePar(SpreadName, false);
-		input->enablePar(PointsChopName, false);
-		break;
-	}
-		
-	return value;
+	return static_cast<ShapeMenuItems>(inputs->getParInt(ShapeName));
 }
 
-Color
-Parameters::evalColor(const TD::OP_Inputs* input)
+TD::Color
+Parameters::evalColor(const TD::OP_Inputs* inputs)
 {
 	std::array<double, 4> vals;
-	input->getParDouble4(ColorName, vals[0], vals[1], vals[2], vals[3]);
-	return Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
+	inputs->getParDouble4(ColorName, vals[0], vals[1], vals[2], vals[3]);
+	return TD::Color((float)vals[0], (float)vals[1], (float)vals[2], (float)vals[3]);
 }
 
 bool
-Parameters::evalGpudirect(const TD::OP_Inputs* input)
+Parameters::evalGpudirect(const TD::OP_Inputs* inputs)
 {
-	return input->getParInt(GpudirectName) ? true : false;
+	return inputs->getParInt(GpudirectName) ? true : false;
 }
 
 double
@@ -57,7 +54,7 @@ Parameters::evalSpread(const TD::OP_Inputs* input)
 	return input->getParDouble(SpreadName);
 }
 
-const OP_CHOPInput*
+const TD::OP_CHOPInput*
 Parameters::evalPointschop(const TD::OP_Inputs* input)
 {
 	return input->getParCHOP(PointsChopName);
@@ -73,9 +70,9 @@ Parameters::evalPointschop(const TD::OP_Inputs* input)
 void
 Parameters::setup(TD::OP_ParameterManager* manager)
 {
-	
+
 	{
-		OP_StringParameter p;
+		TD::OP_StringParameter p;
 		p.name = ShapeName;
 		p.label = ShapeLabel;
 		p.page = "Generator";
@@ -100,17 +97,17 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			"Voronoi",
 			"KDTree"
 		};
-		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());
+		TD::OP_ParAppendResult res = manager->appendMenu(p, Names.size(), Names.data(), Labels.data());
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = ColorName;
 		p.label = ColorLabel;
 		p.page = "Generator";
-		
+
 		const int ArraySize = 4;
 
 		const std::array<double, ArraySize>  DefaultValues = { 1.0, 1.0, 1.0, 1.0 };
@@ -130,37 +127,37 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			p.clampMins[i] = ClampMins[i];
 			p.clampMaxes[i] = ClampMaxes[i];
 		}
-		OP_ParAppendResult res = manager->appendRGBA(p);
+		TD::OP_ParAppendResult res = manager->appendRGBA(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = GpudirectName;
 		p.label = GpudirectLabel;
 		p.page = "Generator";
 		p.defaultValues[0] = false;
 
-		OP_ParAppendResult res = manager->appendToggle(p);
+		TD::OP_ParAppendResult res = manager->appendToggle(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_StringParameter p;
+		TD::OP_StringParameter p;
 		p.name = PointsChopName;
 		p.label = PointsChopLabel;
 		p.page = "Generator";
 		p.defaultValue = "";
 
-		OP_ParAppendResult res = manager->appendCHOP(p);
+		TD::OP_ParAppendResult res = manager->appendCHOP(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = ScaleName;
 		p.label = ScaleLabel;
 		p.page = "Generator";
@@ -172,13 +169,13 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 		p.clampMins[0] = true;
 		p.clampMaxes[0] = true;
 
-		OP_ParAppendResult res = manager->appendFloat(p);
+		TD::OP_ParAppendResult res = manager->appendFloat(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 	{
-		OP_NumericParameter p;
+		TD::OP_NumericParameter p;
 		p.name = SpreadName;
 		p.label = SpreadLabel;
 		p.page = "Generator";
@@ -190,9 +187,9 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 		p.clampMins[0] = true;
 		p.clampMaxes[0] = true;
 
-		OP_ParAppendResult res = manager->appendFloat(p);
+		TD::OP_ParAppendResult res = manager->appendFloat(p);
 
-		assert(res == OP_ParAppendResult::Success);
+		assert(res == TD::OP_ParAppendResult::Success);
 	}
 
 

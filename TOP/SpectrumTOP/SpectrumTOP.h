@@ -16,6 +16,7 @@
 #define __SpectrumTOP__
 
 #include "TOP_CPlusPlusBase.h"
+#include "Parameters.h"
 
 #include <opencv2\core.hpp>
 #include <string>
@@ -36,7 +37,7 @@ namespace GpuUtils
 }
 
 /*
-This example implements a TOP to calculate the fourier transform using openCV's cuda functionallity.
+This example implements a TOP to calculate the fourier transform using OpenCV's CUDA functionallity.
 
 It takes the following parameters:
 	- Transform:	One of [Image To DFT, DFT To Image], which determines if we calculate the forward or 
@@ -89,6 +90,7 @@ private:
 
 	TOP_Context*		myContext;
 	cudaStream_t		myStream;
+	Parameters			myParms;
 };
 
 #endif
