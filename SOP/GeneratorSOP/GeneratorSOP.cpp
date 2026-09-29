@@ -40,9 +40,9 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	OP_CustomOPInfo& customInfo = info->customOPInfo;
 
 	// Unique name of the node which starts with an upper case letter, followed by lower case letters or numbers
-	customInfo.opType->setString("Generator4");
+	customInfo.opType->setString("Generator");
 	// English readable name
-	customInfo.opLabel->setString("Generator4");
+	customInfo.opLabel->setString("Generator");
 	// Information of the author of the node
 	customInfo.authorName->setString("Gabriel Robels");
 	customInfo.authorEmail->setString("support@derivative.ca");
@@ -50,6 +50,9 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	// This CHOP takes one input
 	customInfo.minInputs = 0;
 	customInfo.maxInputs = 0;
+
+	customInfo.majorVersion = 0;
+	customInfo.minorVersion = 5;
 }
 
 DLLEXPORT
@@ -75,7 +78,7 @@ DestroySOPInstance(SOP_CPlusPlusBase* instance)
 
 
 GeneratorSOP::GeneratorSOP(const OP_NodeInfo*) :
-	myShapeGenerator{} 
+	myShapeGenerator{}
 {
 };
 
@@ -89,7 +92,7 @@ GeneratorSOP::getGeneralInfo(SOP_GeneralInfo* ginfo, const TD::OP_Inputs* inputs
 	// This will cause the node to cook every frame if the output is used
 	ginfo->cookEveryFrameIfAsked = false;
 
-	// Direct shape to GPU loading if asked 
+	// Direct shape to GPU loading if asked
 	ginfo->directToGPU = myParms.evalGpudirect(inputs);
 }
 
