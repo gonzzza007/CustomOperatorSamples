@@ -18,6 +18,7 @@
 #include "SOP_CPlusPlusBase.h"
 #include "Parameters.h"
 #include <string>
+#include <vector>
 
 
 /*
@@ -52,6 +53,30 @@ private:
 	std::string			myErrorString;
 
 	Parameters myParms;
+
+	// Cache of the last computation, re-emitted while input and parameters are unchanged
+	struct CacheKey
+	{
+		ModeMenuItems	mode;
+		bool			useOptimalAlpha;
+		bool			skipInteriorPoints;
+		double			alpha;
+
+		bool operator==(const CacheKey& o) const
+		{
+			return mode == o.mode && useOptimalAlpha == o.useOptimalAlpha &&
+				skipInteriorPoints == o.skipInteriorPoints && alpha == o.alpha;
+		}
+	};
+
+	bool						myHasCache = false;
+	CacheKey					myCachedKey{};
+	std::vector<TD::Position>	myCachedInput;
+	std::vector<TD::Position>	myCachedPoints;
+	std::vector<int32_t>		myCachedIndices;
+	std::vector<int32_t>		myCachedLineIndices;
+	std::vector<int32_t>		myCachedLineSizes;
+	std::string					myCachedWarning;
 };
 
 #endif // !__AlphaShapesSOP__

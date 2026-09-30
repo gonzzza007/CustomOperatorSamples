@@ -9,6 +9,8 @@ CGAL must be installed for the `x64-windows-static-md` triplet (`vcpkg install c
 
 ## Parameters
 * **Mode** - select between Regularized (default) and General mode.
+  * **Regularized** - outputs only the surface triangles of the solid part of the shape.
+  * **General** - additionally outputs dangling triangles, dangling edges (as line primitives) and isolated points that belong to the alpha complex but are not part of any solid.
 * **Use optimal Alpha** - Use optimal Alpha value that is automatically calculated.
 * **Alpha** - Set manual alpha (α) value for calculation.
 * **Skip interior points** - Skip points that are mesh interior and not used for triangle faces.

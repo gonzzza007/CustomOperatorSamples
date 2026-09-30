@@ -20,6 +20,13 @@
 #include <CGAL/Delaunay_triangulation_3.h>
 #include <CGAL/Alpha_shape_3.h>
 #include <CGAL/Simple_cartesian.h>
+#include <CGAL/Fixed_alpha_shape_3.h>
+#include <CGAL/Fixed_alpha_shape_vertex_base_3.h>
+#include <CGAL/Fixed_alpha_shape_cell_base_3.h>
+
+#include <cstring>
+#include <unordered_map>
+#include <vector>
 
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel		Gt;
@@ -43,6 +50,92 @@ typedef Alpha_shape_3::Alpha_iterator													Alpha_iterator;
 typedef Alpha_shape_3::Vertex_handle													Vertex_handle;
 typedef Alpha_shape_3::Facet																	Facet;
 typedef Alpha_shape_3::Cell_handle														Cell_handle;
+
+// Fixed alpha shape: classifies faces for a single alpha value only (no alpha spectrum),
+// much cheaper than Alpha_shape_3 when the optimal alpha search is not needed
+typedef CGAL::Fixed_alpha_shape_vertex_base_3<Gt>							FVb;
+typedef CGAL::Fixed_alpha_shape_cell_base_3<Gt>								FCb;
+typedef CGAL::Triangulation_data_structure_3<FVb, FCb>				FTds;
+typedef CGAL::Delaunay_triangulation_3<Gt, FTds>							FTriangulation_3;
+typedef CGAL::Fixed_alpha_shape_3<FTriangulation_3>						Fixed_alpha_shape_3;
+
+namespace
+{
+
+// Collects the geometry of an alpha shape (works for both Alpha_shape_3 and Fixed_alpha_shape_3):
+//   Regularized: REGULAR facets (surface of the solid part)
+//   General:     REGULAR + SINGULAR facets (dangling triangles),
+//                SINGULAR edges as lines and SINGULAR vertices as isolated points
+// Only points used by the output primitives are emitted, plus interior points
+// unless skipInteriorPoints is set. Points outside the shape are never emitted.
+template <class AS>
+void
+extractShape(const AS& as, bool general, bool skipInteriorPoints,
+	std::vector<TD::Position>& points, std::vector<int32_t>& triIndices,
+	std::vector<int32_t>& lineIndices)
+{
+	points.clear();
+	triIndices.clear();
+	lineIndices.clear();
+
+	// Fewer than 4 points or coplanar input: no 3D alpha shape
+	if (as.dimension() < 3)
+		return;
+
+	// Output point index of each emitted vertex, points are added on first use
+	std::unordered_map<typename AS::Vertex_handle, int32_t> vertex_map;
+	vertex_map.reserve(as.number_of_vertices());
+	points.reserve(as.number_of_vertices());
+
+	auto indexOf = [&](typename AS::Vertex_handle vh) {
+		auto res = vertex_map.try_emplace(vh, static_cast<int32_t>(points.size()));
+		if (res.second) {
+			const auto& pt = vh->point();
+			points.emplace_back(
+				static_cast<float>(pt.x()),
+				static_cast<float>(pt.y()),
+				static_cast<float>(pt.z()));
+		}
+		return res.first->second;
+	};
+
+	// Facets (triangles)
+	for (auto fit = as.finite_facets_begin(); fit != as.finite_facets_end(); ++fit) {
+		auto type = as.classify(*fit);
+		if (type == AS::REGULAR || (general && type == AS::SINGULAR)) {
+			typename AS::Cell_handle cell = fit->first;
+			int i = fit->second;
+
+			triIndices.push_back(indexOf(cell->vertex((i + 1) & 3)));
+			triIndices.push_back(indexOf(cell->vertex((i + 2) & 3)));
+			triIndices.push_back(indexOf(cell->vertex((i + 3) & 3)));
+		}
+	}
+
+	// Dangling edges (lines)
+	if (general) {
+		for (auto eit = as.finite_edges_begin(); eit != as.finite_edges_end(); ++eit) {
+			if (as.classify(*eit) == AS::SINGULAR) {
+				lineIndices.push_back(indexOf(eit->first->vertex(eit->second)));
+				lineIndices.push_back(indexOf(eit->first->vertex(eit->third)));
+			}
+		}
+	}
+
+	// Isolated points (General) and interior points (unless skipped)
+	if (general || !skipInteriorPoints) {
+		for (auto vit = as.finite_vertices_begin(); vit != as.finite_vertices_end(); ++vit) {
+			typename AS::Vertex_handle vh = vit;
+			auto type = as.classify(vh);
+			if ((general && type == AS::SINGULAR) ||
+				(!skipInteriorPoints && type == AS::INTERIOR)) {
+				indexOf(vh);
+			}
+		}
+	}
+}
+
+}
 
 
 
@@ -76,7 +169,7 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	customInfo.authorEmail->setString("gonzzza@gmail.com");
 
 	customInfo.majorVersion = 0;
-	customInfo.minorVersion = 4;
+	customInfo.minorVersion = 5;
 
 	// This CHOP takes one input
 	customInfo.minInputs = 1;
@@ -116,9 +209,9 @@ AlphaShapesSOP::~AlphaShapesSOP()
 void
 AlphaShapesSOP::getGeneralInfo(SOP_GeneralInfo* ginfo, const TD::OP_Inputs* inputs, void*)
 {
-	// This will cause the node to cook every frame if the output is used
-	// We set it to true otherwise the sop does not update when input sop changes
-	ginfo->cookEveryFrameIfAsked = true;
+	// Don't cook every frame: the node still cooks when the input SOP or a parameter changes.
+	// Cooking every frame would rebuild the output geometry each frame even for a static input
+	ginfo->cookEveryFrameIfAsked = false;
 
 	// Don't know what to do with it but TRUE does not work...
 	ginfo->directToGPU = false;
@@ -136,69 +229,83 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 	bool skipInteriorPoints = myParms.evalSkipInteriorPoints(inputs);
 	double alpha = myParms.evalAlpha(inputs);
 
+	bool general = mode == ModeMenuItems::General;
 
-	std::list<Point> lp;
+	// Alpha is ignored when searching for the optimal one, so it doesn't invalidate the cache
+	CacheKey key{
+		mode,
+		useOptimalAlpha,
+		skipInteriorPoints,
+		useOptimalAlpha ? 0.0 : alpha
+	};
+
 	const Position* inPos = sop->getPointPositions();
-	for (int i = 0; i < sop->getNumPoints(); ++i) {
-		lp.emplace_back(inPos[i].x, inPos[i].y, inPos[i].z);
-	}
+	const int numPoints = sop->getNumPoints();
 
-	// Alpha shape computed in REGULARIZED mode by default
-	Alpha_shape_3 as(lp.begin(), lp.end());
-	if (mode == ModeMenuItems::General) { 
-		as.set_mode(Alpha_shape_3::GENERAL);
-	}
-	
-	// search for optimal alpha value?
-	if (useOptimalAlpha) {	
-		Alpha_shape_3::NT alpha_solid = as.find_alpha_solid();
-		Alpha_shape_3::Alpha_iterator opt = as.find_optimal_alpha(1);
-		as.set_alpha(*opt);
-		
-		std::stringstream buffer;
-		buffer << std::endl << "Smallest alpha value to get a solid through data points is " << alpha_solid << std::endl;
-		buffer << "Optimal alpha value to get one connected component is " << *opt << std::endl;
-		myWarningString = buffer.str();
-	
-	} else {
-		as.set_alpha(alpha);
-	}
-	
-	// save vertex indexes
-	std::unordered_map<Alpha_shape_3::Vertex_handle, size_t> vertex_map;
-	size_t idx = 0;
-	for (auto vit = as.vertices_begin(); vit != as.vertices_end(); ++vit) {
-		
-		// Skip interior points/vertices?
-		if (skipInteriorPoints && as.classify(vit) == Alpha_shape_3::INTERIOR)
-			continue;
-		
-		Point pt = vit->point();
-		output->addPoint(TD::Position(
-			pt.x(),
-			pt.y(),
-			pt.z()
-		));
-		
-		// remember point indexes
-		vertex_map[vit] = idx++;
-	}
+	// Recompute only if input points or parameters changed since the last cook
+	bool inputChanged = !myHasCache ||
+		!(key == myCachedKey) ||
+		myCachedInput.size() != static_cast<size_t>(numPoints) ||
+		(numPoints > 0 && std::memcmp(myCachedInput.data(), inPos, numPoints * sizeof(Position)) != 0);
 
+	if (inputChanged) {
+		myCachedInput.assign(inPos, inPos + numPoints);
+		myCachedKey = key;
+		myCachedWarning.clear();
 
-	// Iterate through all facets (triangles)
-	for (Alpha_shape_3::Facet_iterator fit = as.facets_begin();
-		fit != as.facets_end(); ++fit) {
-		if (as.classify(*fit) == Alpha_shape_3::REGULAR) {
-			Alpha_shape_3::Cell_handle cell = fit->first;
-			int i = fit->second;
-
-			output->addTriangle(
-				vertex_map[cell->vertex((i + 1) & 3)],
-				vertex_map[cell->vertex((i + 2) & 3)],
-				vertex_map[cell->vertex((i + 3) & 3)]
-			);
-
+		std::vector<Point> lp;
+		lp.reserve(numPoints);
+		for (int i = 0; i < numPoints; ++i) {
+			lp.emplace_back(inPos[i].x, inPos[i].y, inPos[i].z);
 		}
+
+		if (useOptimalAlpha) {
+			// Full alpha spectrum is needed to search for the optimal alpha value.
+			// Mode is passed to the constructor: calling set_mode() afterwards
+			// re-initializes the alpha maps and re-sorts the alpha spectrum
+			Alpha_shape_3 as(lp.begin(), lp.end(), 0,
+				general ? Alpha_shape_3::GENERAL : Alpha_shape_3::REGULARIZED);
+
+			if (as.dimension() == 3) {
+				Alpha_shape_3::NT alpha_solid = as.find_alpha_solid();
+				Alpha_shape_3::Alpha_iterator opt = as.find_optimal_alpha(1);
+				if (opt != as.alpha_end()) {
+					as.set_alpha(*opt);
+
+					std::stringstream buffer;
+					buffer << std::endl << "Smallest alpha value to get a solid through data points is " << alpha_solid << std::endl;
+					buffer << "Optimal alpha value to get one connected component is " << *opt << std::endl;
+					myCachedWarning = buffer.str();
+				}
+			}
+
+			extractShape(as, general, skipInteriorPoints,
+				myCachedPoints, myCachedIndices, myCachedLineIndices);
+		} else {
+			// Single alpha value: no need for the alpha spectrum.
+			// Fixed_alpha_shape_3 always classifies like GENERAL mode,
+			// extractShape() drops SINGULAR faces for Regularized
+			Fixed_alpha_shape_3 as(lp.begin(), lp.end(), alpha);
+			extractShape(as, general, skipInteriorPoints,
+				myCachedPoints, myCachedIndices, myCachedLineIndices);
+		}
+
+		myCachedLineSizes.assign(myCachedLineIndices.size() / 2, 2);
+
+		myHasCache = true;
+	}
+
+	myWarningString = myCachedWarning;
+
+	if (!myCachedPoints.empty()) {
+		output->addPoints(myCachedPoints.data(), static_cast<int32_t>(myCachedPoints.size()));
+	}
+	if (!myCachedIndices.empty()) {
+		output->addTriangles(myCachedIndices.data(), static_cast<int32_t>(myCachedIndices.size() / 3));
+	}
+	if (!myCachedLineSizes.empty()) {
+		output->addLines(myCachedLineIndices.data(), myCachedLineSizes.data(),
+			static_cast<int32_t>(myCachedLineSizes.size()));
 	}
 }
 
@@ -222,7 +329,7 @@ AlphaShapesSOP::getErrorString(TD::OP_String* error, void*)
 	myErrorString = "";
 }
 
-void 
+void
 AlphaShapesSOP::getWarningString(OP_String* warning, void*)
 {
 	warning->setString(myWarningString.c_str());
