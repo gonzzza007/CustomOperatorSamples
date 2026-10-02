@@ -1,7 +1,10 @@
 #pragma once
 
-class TD::OP_Inputs;
-class TD::OP_ParameterManager;
+namespace TD
+{
+	class OP_Inputs;
+	class OP_ParameterManager;
+}
 
 #pragma region ParNames and ParLabels
 

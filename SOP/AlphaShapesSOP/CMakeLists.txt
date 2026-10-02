@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(Generator) # the output name of the plugin
+project(AlphaShapes) # the output name of the plugin
 
 message(STATUS "** Building ${PROJECT_NAME} SOP **")
 
@@ -66,7 +66,39 @@ endfunction(BuiltCustomOp)
 
 ###
 
-# voro++.cc is a unity build that includes the rest of the Voro++ sources
-set(DEP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/voronoi/voro++.cc)
+# CGAL (header-only) and its dependencies (Boost, GMP, MPFR), on macOS: brew install cgal
 
-BuiltCustomOp(${PROJECT_NAME} "${PROJECT_NAME}SOP.cpp" "") # the name of the entry file
+# Link GMP and MPFR statically so the plugin doesn't need Homebrew at runtime
+# (same idea as the x64-windows-static-md vcpkg triplet on Windows).
+# CGAL looks GMP up through several cache variables, so all of them are pointed
+# at the static archives before find_package(CGAL).
+option(STATIC_CGAL_DEPS "Link GMP and MPFR statically" ON)
+set(STATIC_DEP_VARS GMP_LIBRARIES GMP_LIBRARY_RELEASE GMP_LIBRARY_DEBUG GMPXX_LIBRARIES MPFR_LIBRARIES)
+
+if (APPLE AND STATIC_CGAL_DEPS)
+	find_library(GMP_STATIC_LIB NAMES libgmp.a HINTS /opt/homebrew/opt/gmp/lib /usr/local/opt/gmp/lib)
+	find_library(GMPXX_STATIC_LIB NAMES libgmpxx.a HINTS /opt/homebrew/opt/gmp/lib /usr/local/opt/gmp/lib)
+	find_library(MPFR_STATIC_LIB NAMES libmpfr.a HINTS /opt/homebrew/opt/mpfr/lib /usr/local/opt/mpfr/lib)
+
+	if (GMP_STATIC_LIB AND GMPXX_STATIC_LIB AND MPFR_STATIC_LIB)
+		message(STATUS "Linking GMP and MPFR statically")
+		set(GMP_LIBRARIES ${GMP_STATIC_LIB} CACHE FILEPATH "" FORCE)
+		set(GMP_LIBRARY_RELEASE ${GMP_STATIC_LIB} CACHE FILEPATH "" FORCE)
+		set(GMP_LIBRARY_DEBUG ${GMP_STATIC_LIB} CACHE FILEPATH "" FORCE)
+		set(GMPXX_LIBRARIES ${GMPXX_STATIC_LIB} CACHE FILEPATH "" FORCE)
+		set(MPFR_LIBRARIES ${MPFR_STATIC_LIB} CACHE FILEPATH "" FORCE)
+	else()
+		message(WARNING "Static GMP/MPFR not found, linking dynamically (brew install gmp mpfr)")
+	endif()
+else()
+	# drop static archives cached by a previous STATIC_CGAL_DEPS=ON configure
+	foreach(VAR ${STATIC_DEP_VARS})
+		if ("${${VAR}}" MATCHES "\\.a$")
+			unset(${VAR} CACHE)
+		endif()
+	endforeach()
+endif()
+
+find_package(CGAL REQUIRED)
+
+BuiltCustomOp(${PROJECT_NAME} "${PROJECT_NAME}SOP.cpp" "CGAL::CGAL") # the name of the entry file

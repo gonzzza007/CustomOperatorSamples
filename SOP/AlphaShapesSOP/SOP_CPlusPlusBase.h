@@ -39,6 +39,8 @@
 #include <assert.h>
 #include "CPlusPlus_Common.h"
 
+class SOP_CPlusPlus;
+
 namespace TD
 {
 
@@ -53,20 +55,65 @@ class SOP_CPlusPlusBase;
 // from the samples folder in a newer TouchDesigner installation.
 // You may need to upgrade your plugin code in that case, to match
 // the new API requirements
-const int SOPCPlusPlusAPIVersion = 3;
+const int SOPCPlusPlusAPIVersion = 4 | (OP_CommonAPIVersion << 16);
 
 class SOP_PluginInfo
 {
-public:
+private:
+	// Set it by calling setAPIVersion()
 	int32_t			apiVersion = 0;
+public:
 
-	int32_t			reserved[100];
+	// Returns false if the API version is not supported
+	[[nodiscard]]
+	int32_t
+	getAPIVersion() const
+	{
+		return apiVersion;
+	}
+
+	// Should be called with a value of SOPCPlusPlusAPIVersion
+	[[nodiscard]]
+	bool
+	setAPIVersion(int32_t version)
+	{
+		apiVersion = version;
+
+		if (!isAPIVersionSupported(version))
+			return false;
+
+		return true;
+	}
+	[[nodiscard]]
+	bool
+	isAPIVersionSupported(int32_t version)
+	{
+		return checkAPIVersionSupported(version, MinAPIVersion, MaxAPIVersion);
+	}
+
+	int32_t			reserved[100] = {};
 
 	// Information used to describe this plugin as a custom OP.
 	OP_CustomOPInfo	customOPInfo;
 
-	int32_t			reserved2[20];
+	int32_t			reserved2[18] = {};
+
+	static constexpr bool checkPrivateOffsets();
+
+private:
+	// Will be set by the caller of FillSOPPluginInfo()
+	const int32_t	MinAPIVersion = 0;
+	const int32_t	MaxAPIVersion = 0;
+	friend class ::SOP_CPlusPlus;
 };
+
+constexpr bool
+SOP_PluginInfo::checkPrivateOffsets()
+{
+	return offsetof(SOP_PluginInfo, apiVersion) == 0 &&
+			offsetof(SOP_PluginInfo, MinAPIVersion) == 408 + sizeof(customOPInfo) + 18 * 4 &&
+			offsetof(SOP_PluginInfo, MaxAPIVersion) == 408 + sizeof(customOPInfo) + 18 * 4 + 4;
+}
 
 enum class SOP_Winding : int32_t
 {
@@ -518,9 +565,46 @@ public:
 	}
 
 	// This is called whenever a dynamic menu type custom parameter needs to have it's content's
-	// updated. It may happen often, so this could should be efficient.
+	// updated. It may happen often, so this call should be efficient.
 	virtual void
 	buildDynamicMenu(const OP_Inputs* inputs, OP_BuildDynamicMenuInfo* info, void* reserved1)
+	{
+	}
+
+	// Override this method if you want to save arbitrary bytedata with this operator into the toe file.
+	// `OP_NodeSaveState* saver` has methods like `saveEntry()` that are used to add key, value pairs to be saved.
+	// This is called whenever the project file is saved or the custom operator is unloaded.
+	// Usage example in Samples/CPlusPlus/CHOP sample project.
+	virtual void
+	saveData(OP_NodeSaveState* saver, void* reserved1)
+	{
+	}
+
+	// Override this method if you want to load the bytedata that was saved into the toe file through `saveData()`.
+	// `OP_NodeLoadState* loader` has methods like `getKey()`, `getKeyCount()`, `loadEntry()` that are used to retrieve key, value pairs.
+	// This is called during startup of the project file, or whenever the custom operator is loaded/reloaded.
+	// Usage example in Samples/CPlusPlus/CHOP sample project.
+	virtual void
+	loadData(const OP_NodeLoadState* loader, void* reserved1)
+	{
+	}
+
+	// Override this method if you want to specify a descriptor string when hovering over the input connectors of the node.
+	// `inputLabel->label->setString()` sets the label for the input index.
+	// Usage example in Samples/CPlusPlus/CHOP sample project.
+	// Note that this label is only visible when the dll is loaded as a Custom Operator, not in the CPlusPlus OPs.
+	virtual void
+	inputConnectorLabel(int index, OP_InputLabel* inputLabel, void* reserved1)
+	{
+	}
+
+	// Override this method in order to enable/disable custom parameters by setting their enable states
+	// `parEnableState->setEnableState()` sets the enable state.
+	// this workflow supersedes the usage of `inputs->enablePar()`.
+	// Note that this callback may be called anytime, not just during cooking
+	// Usage example in Samples/CPlusPlus/CHOP sample project.
+	virtual void
+	setParameterEnableStates(const OP_Inputs* inputs, OP_ParEnableState* parEnableState, void* reserved1)
 	{
 	}
 
@@ -530,10 +614,6 @@ public:
 private:
 
 	// Reserved for future features
-	virtual int32_t	reservedFunc6() { return 0; }
-	virtual int32_t	reservedFunc7() { return 0; }
-	virtual int32_t	reservedFunc8() { return 0; }
-	virtual int32_t	reservedFunc9() { return 0; }
 	virtual int32_t	reservedFunc10() { return 0; }
 	virtual int32_t	reservedFunc11() { return 0; }
 	virtual int32_t	reservedFunc12() { return 0; }
@@ -552,7 +632,7 @@ private:
 
 #pragma pack(pop)
 
-static_assert(offsetof(SOP_PluginInfo, apiVersion) == 0, "Incorrect Alignment");
+static_assert(SOP_PluginInfo::checkPrivateOffsets(), "Incorrect Alignment");
 static_assert(offsetof(SOP_PluginInfo, customOPInfo) == 408, "Incorrect Alignment");
 static_assert(sizeof(SOP_PluginInfo) == 944, "Incorrect Size");
 

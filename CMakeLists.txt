@@ -31,6 +31,7 @@ endif()
 
 # SOPs
 if("SOP" STREQUAL OP_FAMILY)
+	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/SOP/AlphaShapesSOP)
 	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/SOP/FilterSOP)
 	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/SOP/GeneratorSOP)
 	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/SOP/IntersectPointsSOP)

@@ -33,8 +33,9 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 {
 	// For more information on CHOP_PluginInfo see CHOP_CPlusPlusBase.h
 
-	// Always set this to CHOPCPlusPlusAPIVersion.
-	info->apiVersion = SOPCPlusPlusAPIVersion;
+	// Check to make sure the running TD version supports our API version.
+	if (!info->setAPIVersion(SOPCPlusPlusAPIVersion))
+		return;
 
 	// For more information on OP_CustomOPInfo see CPlusPlus_Common.h
 	OP_CustomOPInfo& customInfo = info->customOPInfo;
@@ -147,12 +148,12 @@ GeneratorSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		case ShapeMenuItems::Divider:
 		{
 			if (!input) {
-				myError = "Missing CHOP input for Divider point positions.";
+				myError = "Missing 3 channel CHOP input for Divider point positions.";
 				return;
 			}
 
 			if (input->numChannels < 3) {
-				myError = "To be used as 3D position data CHOP input needs to have 3 channels." + std::to_string(input->numChannels) + ".";
+				myError = "Input points CHOP needs to have 3 channels (currently " + std::to_string(input->numChannels) + ")";
 				return;
 			}
 
@@ -162,12 +163,12 @@ GeneratorSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		case ShapeMenuItems::Voronoi:
 		{
 			if (!input) {
-				myError = "Missing CHOP input for Voronoi cell point positions.";
+				myError = "Missing 3 channel CHOP input for Voronoi cell point positions.";
 				return;
 			}
 
 			if (input->numChannels < 3) {
-				myError = "To be used as 3D position data CHOP input needs to have 3 channels." + std::to_string(input->numChannels) + ".";
+				myError = "Input points CHOP needs to have 3 channels (currently " + std::to_string(input->numChannels) + ")";
 				return;
 			}
 
@@ -185,12 +186,12 @@ GeneratorSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		{
 
 			if (!input) {
-				myError = "Missing CHOP input for KD-Tree cell point positions.";
+				myError = "Missing 3 channel CHOP input for KD-Tree cell point positions.";
 				return;
 			}
 
 			if (input->numChannels < 3) {
-				myError = "To be used as 3D position data CHOP input needs to have 3 channels." + std::to_string(input->numChannels) + ".";
+				myError = "Input points CHOP needs to have 3 channels (currently " + std::to_string(input->numChannels) + ")";
 				return;
 			}
 

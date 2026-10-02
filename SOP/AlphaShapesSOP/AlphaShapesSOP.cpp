@@ -154,8 +154,9 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 {
 	// For more information on CHOP_PluginInfo see CHOP_CPlusPlusBase.h
 
-	// Always set this to CHOPCPlusPlusAPIVersion.
-	info->apiVersion = SOPCPlusPlusAPIVersion;
+	// Check to make sure the running TD version supports our API version.
+	if (!info->setAPIVersion(SOPCPlusPlusAPIVersion))
+		return;
 
 	// For more information on OP_CustomOPInfo see CPlusPlus_Common.h
 	OP_CustomOPInfo& customInfo = info->customOPInfo;
