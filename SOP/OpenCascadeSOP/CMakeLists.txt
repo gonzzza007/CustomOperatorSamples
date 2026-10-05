@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(Generator) # the output name of the plugin
+project(OpenCascade) # the output name of the plugin
 
 message(STATUS "** Building ${PROJECT_NAME} SOP **")
 
@@ -78,7 +78,19 @@ endfunction(BuiltCustomOp)
 
 ###
 
-# voro++.cc is a unity build that includes the rest of the Voro++ sources
-set(DEP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/voronoi/voro++.cc)
+# OpenCascade (OCCT), linked dynamically. On macOS: brew install opencascade
+# (on Windows point OpenCASCADE_DIR to the folder with OpenCASCADEConfig.cmake)
+find_package(OpenCASCADE REQUIRED)
+include_directories(${OpenCASCADE_INCLUDE_DIR})
 
-BuiltCustomOp(${PROJECT_NAME} "${PROJECT_NAME}SOP.cpp" "") # the name of the entry file
+set(OCCT_LIBS
+	TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo
+	TKTopAlgo TKPrim TKShHealing TKBO TKBool TKFillet TKMesh
+)
+
+BuiltCustomOp(${PROJECT_NAME} "${PROJECT_NAME}SOP.cpp" "${OCCT_LIBS}") # the name of the entry file
+
+# let the plugin find the OCCT libraries at runtime
+if (APPLE)
+	set_target_properties(${PROJECT_NAME} PROPERTIES BUILD_RPATH "${OpenCASCADE_LIBRARY_DIR}")
+endif()

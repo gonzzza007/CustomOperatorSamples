@@ -32,7 +32,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${OUTPUT_DIRECTORY})
 
 function(BuiltCustomOp OPNAME SRC LINK_LIBRARIES)
 
-	file(GLOB PROJECT_SRC
+	file(GLOB PROJECT_SRC CONFIGURE_DEPENDS
 		"*.h"
 		"*.hpp"
 		"*.cpp"
@@ -53,13 +53,25 @@ function(BuiltCustomOp OPNAME SRC LINK_LIBRARIES)
     set_target_properties(${OPTEST} PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/plugin)
     set_target_properties(${OPTEST} PROPERTIES VS_DEBUGGER_ENVIRONMENT "TOUCH_TEXT_CONSOLE=1")
 
-	if (APPLE AND COPY_TO_TD_PLUGINS)
+	if (COPY_TO_TD_PLUGINS AND APPLE)
 		set(TD_PLUGINS_DIR "$ENV{HOME}/Library/Application Support/Derivative/TouchDesigner099/Plugins")
 		add_custom_command(TARGET ${OPNAME} POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E make_directory "${TD_PLUGINS_DIR}"
 			COMMAND ${CMAKE_COMMAND} -E rm -rf "${TD_PLUGINS_DIR}/${OPNAME}.plugin"
 			COMMAND ${CMAKE_COMMAND} -E copy_directory "$<TARGET_BUNDLE_DIR:${OPNAME}>" "${TD_PLUGINS_DIR}/${OPNAME}.plugin"
 			COMMENT "Copying ${OPNAME}.plugin to ${TD_PLUGINS_DIR}")
+	elseif (COPY_TO_TD_PLUGINS AND WIN32)
+		file(TO_CMAKE_PATH "$ENV{USERPROFILE}/Documents/Derivative/Plugins" TD_PLUGINS_DIR)
+		# the DLLs of linked libraries (e.g. OCCT) have to be next to the plugin DLL
+		set(RUNTIME_DLLS "")
+		if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.21)
+			set(RUNTIME_DLLS "$<TARGET_RUNTIME_DLLS:${OPNAME}>")
+		endif()
+		add_custom_command(TARGET ${OPNAME} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${TD_PLUGINS_DIR}"
+			COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${OPNAME}>" ${RUNTIME_DLLS} "${TD_PLUGINS_DIR}"
+			COMMAND_EXPAND_LISTS
+			COMMENT "Copying ${OPNAME}.dll to ${TD_PLUGINS_DIR}")
 	endif()
 
 endfunction(BuiltCustomOp)
