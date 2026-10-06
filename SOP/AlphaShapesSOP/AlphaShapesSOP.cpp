@@ -24,6 +24,8 @@
 #include <CGAL/Fixed_alpha_shape_vertex_base_3.h>
 #include <CGAL/Fixed_alpha_shape_cell_base_3.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -68,9 +70,11 @@ namespace
 //                SINGULAR edges as lines and SINGULAR vertices as isolated points
 // Only points used by the output primitives are emitted, plus interior points
 // unless skipInteriorPoints is set. Points outside the shape are never emitted.
+// Surface triangles face outwards, clockwise like in TouchDesigner. With
+// uniqueTriPoints every triangle gets its own 3 points (flat normals).
 template <class AS>
 void
-extractShape(const AS& as, bool general, bool skipInteriorPoints,
+extractShape(const AS& as, bool general, bool skipInteriorPoints, bool uniqueTriPoints,
 	std::vector<TD::Position>& points, std::vector<int32_t>& triIndices,
 	std::vector<int32_t>& lineIndices)
 {
@@ -87,15 +91,19 @@ extractShape(const AS& as, bool general, bool skipInteriorPoints,
 	vertex_map.reserve(as.number_of_vertices());
 	points.reserve(as.number_of_vertices());
 
+	auto newPoint = [&](typename AS::Vertex_handle vh) {
+		const auto& pt = vh->point();
+		points.emplace_back(
+			static_cast<float>(pt.x()),
+			static_cast<float>(pt.y()),
+			static_cast<float>(pt.z()));
+		return static_cast<int32_t>(points.size() - 1);
+	};
+
 	auto indexOf = [&](typename AS::Vertex_handle vh) {
 		auto res = vertex_map.try_emplace(vh, static_cast<int32_t>(points.size()));
-		if (res.second) {
-			const auto& pt = vh->point();
-			points.emplace_back(
-				static_cast<float>(pt.x()),
-				static_cast<float>(pt.y()),
-				static_cast<float>(pt.z()));
-		}
+		if (res.second)
+			newPoint(vh);
 		return res.first->second;
 	};
 
@@ -103,12 +111,32 @@ extractShape(const AS& as, bool general, bool skipInteriorPoints,
 	for (auto fit = as.finite_facets_begin(); fit != as.finite_facets_end(); ++fit) {
 		auto type = as.classify(*fit);
 		if (type == AS::REGULAR || (general && type == AS::SINGULAR)) {
-			typename AS::Cell_handle cell = fit->first;
-			int i = fit->second;
+			typename AS::Facet f = *fit;
+			// A REGULAR facet separates an interior cell from an exterior one:
+			// look at it from the interior cell. SINGULAR facets have no inside.
+			if (type == AS::REGULAR && as.classify(f.first) != AS::INTERIOR)
+				f = as.mirror_facet(f);
 
-			triIndices.push_back(indexOf(cell->vertex((i + 1) & 3)));
-			triIndices.push_back(indexOf(cell->vertex((i + 2) & 3)));
-			triIndices.push_back(indexOf(cell->vertex((i + 3) & 3)));
+			typename AS::Cell_handle cell = f.first;
+			const int i = f.second;
+			typename AS::Vertex_handle v[3] = {
+				cell->vertex((i + 1) & 3),
+				cell->vertex((i + 2) & 3),
+				cell->vertex((i + 3) & 3)
+			};
+
+			if (type == AS::REGULAR) {
+				// TouchDesigner triangles are clockwise seen from the front, so their
+				// normal is (p2 - p0) x (p1 - p0). It must point away from the
+				// vertex of the interior cell opposite to the facet.
+				const auto& p0 = v[0]->point();
+				const auto n = CGAL::cross_product(v[2]->point() - p0, v[1]->point() - p0);
+				if (n * (cell->vertex(i)->point() - p0) > 0)
+					std::swap(v[1], v[2]);
+			}
+
+			for (auto vh : v)
+				triIndices.push_back(uniqueTriPoints ? newPoint(vh) : indexOf(vh));
 		}
 	}
 
@@ -132,6 +160,46 @@ extractShape(const AS& as, bool general, bool skipInteriorPoints,
 				indexOf(vh);
 			}
 		}
+	}
+}
+
+// Point normals from the clockwise triangles: every point gets the average of
+// the normals of its triangles, weighted by the triangle angle at that point
+// (like the Attribute Create SOP). Points without triangles get (0, 0, 1).
+void
+computeNormals(const std::vector<TD::Position>& points, const std::vector<int32_t>& triIndices,
+	std::vector<TD::Vector>& normals)
+{
+	using V = Gt::Vector_3;
+	std::vector<V> sums(points.size(), CGAL::NULL_VECTOR);
+	auto pos = [&](int32_t i) { return V(points[i].x, points[i].y, points[i].z); };
+
+	for (size_t t = 0; t + 2 < triIndices.size(); t += 3) {
+		const int32_t idx[3] = { triIndices[t], triIndices[t + 1], triIndices[t + 2] };
+		const V p[3] = { pos(idx[0]), pos(idx[1]), pos(idx[2]) };
+		V n = CGAL::cross_product(p[2] - p[0], p[1] - p[0]);
+		const double len = std::sqrt(n.squared_length());
+		if (len <= 0.0)
+			continue;
+		n = n / len;
+
+		for (int k = 0; k < 3; k++) {
+			const V e1 = p[(k + 1) % 3] - p[k];
+			const V e2 = p[(k + 2) % 3] - p[k];
+			const double l1 = std::sqrt(e1.squared_length()), l2 = std::sqrt(e2.squared_length());
+			if (l1 <= 0.0 || l2 <= 0.0)
+				continue;
+			const double cosA = std::max(-1.0, std::min(1.0, (e1 * e2) / (l1 * l2)));
+			sums[idx[k]] = sums[idx[k]] + n * std::acos(cosA);
+		}
+	}
+
+	normals.resize(points.size());
+	for (size_t i = 0; i < sums.size(); i++) {
+		const double len = std::sqrt(sums[i].squared_length());
+		normals[i] = len > 0.0 ?
+			TD::Vector(static_cast<float>(sums[i].x() / len), static_cast<float>(sums[i].y() / len), static_cast<float>(sums[i].z() / len)) :
+			TD::Vector(0.0f, 0.0f, 1.0f);
 	}
 }
 
@@ -170,7 +238,7 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	customInfo.authorEmail->setString("gonzzza@gmail.com");
 
 	customInfo.majorVersion = 0;
-	customInfo.minorVersion = 5;
+	customInfo.minorVersion = 6;
 
 	// This CHOP takes one input
 	customInfo.minInputs = 1;
@@ -229,15 +297,18 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 	bool useOptimalAlpha = myParms.evalUseOptimalAlpha(inputs);
 	bool skipInteriorPoints = myParms.evalSkipInteriorPoints(inputs);
 	double alpha = myParms.evalAlpha(inputs);
+	NormalsMenuItems normals = myParms.evalNormals(inputs);
 
 	bool general = mode == ModeMenuItems::General;
+	bool flat = normals == NormalsMenuItems::Flat;
 
 	// Alpha is ignored when searching for the optimal one, so it doesn't invalidate the cache
 	CacheKey key{
 		mode,
 		useOptimalAlpha,
 		skipInteriorPoints,
-		useOptimalAlpha ? 0.0 : alpha
+		useOptimalAlpha ? 0.0 : alpha,
+		normals
 	};
 
 	const Position* inPos = sop->getPointPositions();
@@ -280,18 +351,22 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 				}
 			}
 
-			extractShape(as, general, skipInteriorPoints,
+			extractShape(as, general, skipInteriorPoints, flat,
 				myCachedPoints, myCachedIndices, myCachedLineIndices);
 		} else {
 			// Single alpha value: no need for the alpha spectrum.
 			// Fixed_alpha_shape_3 always classifies like GENERAL mode,
 			// extractShape() drops SINGULAR faces for Regularized
 			Fixed_alpha_shape_3 as(lp.begin(), lp.end(), alpha);
-			extractShape(as, general, skipInteriorPoints,
+			extractShape(as, general, skipInteriorPoints, flat,
 				myCachedPoints, myCachedIndices, myCachedLineIndices);
 		}
 
 		myCachedLineSizes.assign(myCachedLineIndices.size() / 2, 2);
+
+		myCachedNormals.clear();
+		if (normals != NormalsMenuItems::Off)
+			computeNormals(myCachedPoints, myCachedIndices, myCachedNormals);
 
 		myHasCache = true;
 	}
@@ -300,6 +375,8 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 
 	if (!myCachedPoints.empty()) {
 		output->addPoints(myCachedPoints.data(), static_cast<int32_t>(myCachedPoints.size()));
+		if (!myCachedNormals.empty())
+			output->setNormals(myCachedNormals.data(), static_cast<int32_t>(myCachedNormals.size()), 0);
 	}
 	if (!myCachedIndices.empty()) {
 		output->addTriangles(myCachedIndices.data(), static_cast<int32_t>(myCachedIndices.size() / 3));

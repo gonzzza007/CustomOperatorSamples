@@ -15,3 +15,7 @@ To build on MacOS (ARM only): *brew install cgal*
 * **Use optimal Alpha** - Use optimal Alpha value that is automatically calculated.
 * **Alpha** - Set manual alpha (α) value for calculation.
 * **Skip interior points** - Skip points that are mesh interior and not used for triangle faces.
+* **Normals** - select how point normals (`N`) are output.
+  * **Off** - no normals are output.
+  * **Smooth** (default) - triangles share points, and each point gets the average of the normals of its triangles, weighted by the triangle angle at that point (like Attribute Create SOP > Compute Normals). Points without triangles (e.g. isolated points or line-only points in General mode) get (0, 0, 1).
+  * **Flat** - every triangle gets its own 3 points, so all points of a triangle share the face normal and the mesh is shaded faceted. This increases the output point count.

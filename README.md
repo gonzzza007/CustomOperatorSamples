@@ -1,32 +1,29 @@
 # Changes to the original TouchDesigner repo:
 
 ## AlphaShapesSOP
+![AlphaShapesSOP](images/AlphaShapesSOP.png)
+
 Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL 6.2.1, Computational Geometry Algorithms Library, https://www.cgal.org
 
-AlphaShapesSOP issues:
-* No normals! There is no easy way to have per face normals and vertex normals - the CGAL Alpha Shapes alrotighm shares vertexes for multiple faces. You can use FacetSOP (unique points - ON, compute normals - ON,ON) to get proper normals.
-
 ## GeneratorSOP
+![GeneratorSOP](images/GeneratorSOP.png)
 * added Divider shape generator - divide the 3D cube with all X,Y,Z points from input CHOP.
 * added Voronoi shape generator - each input CHOP point becomes a new Voronoi cell. Voro++ library is used to generate Voronoi shape, https://math.lbl.gov/voro++/about.html
 * added KDTree shape generator - build the KD-Tree using input CHOP points for 3D cube division
 
-GeneratorSOP inputs:
-* 3 channel input CHOP, which will represent the coordinates of points that will be center cell points for Divider, Voronoi and KDTree
-* Scale - scale down each resulting cell
-* Spread - move each cell away from the center of the cube
+## OpenCascadeSOP
+![OpenCascadeSOP](images/OpenCascadeSOP.png)
 
-GeneratorSOP issues:
-* No normals! There is no easy way to have per face normals and vertex normals - the CGAL Alpha Shapes alrotighm shares vertexes for multiple faces. You can use FacetSOP (unique points - ON, compute normals - ON,ON) to get proper normals.
-* Don't have VBO variant (GPU Direct) for all new generators. Not sure if it's possible
-* Input CHOP data must be normalised from -1.0 to 1.0
-* Input CHOP data is not checked for 'same coordinates' points, which might cause strange behaviour
+OpenCascade algorithms to modify the shape edges: create fillet or chamfer.
+https://occt3d.com/dev/doc/overview/html/index.html
+
+----------------------------------------------------------------
 
 **Windows Visual Studio** Release \*.dll are copied to *%USERPROFILE%\Documents\Derivative\Plugins*
 
 **MacOs CMake** Release \*.plugin are copied to *~/Library/Application Support/Derivative/TouchDesigner099/Plugins*
 
-AlphaShapesSOP and GeneratorSOP use the SOP C++ API version 4 (SOP_CPlusPlusBase.h, CPlusPlus_Common.h and BitMaskFlags.h). They require TouchDesigner 2025 or newer.
+All added/modified SOP's use the SOP C++ API version 4 (SOP_CPlusPlusBase.h, CPlusPlus_Common.h and BitMaskFlags.h). They require TouchDesigner 2025 or newer.
 
 Feel free to create pull requests or send feedback and ideas.
 ----------------------------------------------------------------
@@ -79,9 +76,11 @@ A few basic examples can be found in the Samples/CPlusPlus folder of the TouchDe
   * [TimesliceFilterCHOP](CHOP/TimeSliceFilterCHOP)
   * [TimesliceGeneratorCHOP](CHOP/TimeSliceGeneratorCHOP)
 * **SOP Family**
+  * [AlphaShapesSOP](SOP/AlphaShapesSOP)
   * [FilterSOP](SOP/FilterSOP)
   * [GeneratorSOP](SOP/GeneratorSOP)
   * [IntersectPointsSOP](SOP/IntersectPointsSOP)
+  * [OpenCascadeSOP](SOP/OpenCascadeSOP)
   * [SpiralSOP](SOP/SpiralSOP)
   * [SprinkleSOP](SOP/SprinkleSOP)
   * [WrapPointsSOP](SOP/WrapPointsSOP)

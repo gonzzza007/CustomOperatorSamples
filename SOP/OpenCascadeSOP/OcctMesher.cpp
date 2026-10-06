@@ -738,7 +738,7 @@ extractMesh(const TopoDS_Shape& shape, double deflection, double angularDeflecti
 
 	// exact surface normals don't always match the triangles: on thin faces the
 	// float noise of the input tilts the triangles off the surface
-	if (normals == NormalsMenuItems::Mesh)
+	if (normals == NormalsMenuItems::Smooth)
 		computeMeshNormals(points, indices, pointNormals);
 }
 

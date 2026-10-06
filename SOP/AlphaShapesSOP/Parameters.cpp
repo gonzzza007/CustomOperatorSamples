@@ -31,6 +31,12 @@ Parameters::evalSkipInteriorPoints(const TD::OP_Inputs* inputs) {
 	return inputs->getParInt(SkipInteriorPointsName) ? true : false;
 }
 
+NormalsMenuItems
+Parameters::evalNormals(const TD::OP_Inputs* input)
+{
+	return static_cast<NormalsMenuItems>(input->getParInt(NormalsName));
+}
+
 
 
 
@@ -94,6 +100,28 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 		p.page = "Alpha Shapes";
 		p.defaultValues[0] = true;
 		OP_ParAppendResult res = manager->appendToggle(p);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	{
+		OP_StringParameter p;
+		p.name = NormalsName;
+		p.label = NormalsLabel;
+		p.page = "Alpha Shapes";
+		p.defaultValue = "Smooth";
+		std::array<const char*, 3> Names =
+		{
+			"Off",
+			"Smooth",
+			"Flat"
+		};
+		std::array<const char*, 3> Labels =
+		{
+			"Off",
+			"Smooth",
+			"Flat"
+		};
+		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());
 		assert(res == OP_ParAppendResult::Success);
 	}
 

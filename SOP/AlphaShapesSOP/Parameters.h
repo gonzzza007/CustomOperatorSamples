@@ -21,6 +21,9 @@ constexpr static char AlphaLabel[] = "Alpha value";
 constexpr static char SkipInteriorPointsName[] = "Skipinterior";
 constexpr static char SkipInteriorPointsLabel[] = "Skip interior points";
 
+constexpr static char NormalsName[] = "Normals";
+constexpr static char NormalsLabel[] = "Normals";
+
 #pragma endregion
 
 #pragma region Menus
@@ -28,6 +31,13 @@ enum class ModeMenuItems
 {
 	Regularized, // default
 	General
+};
+
+enum class NormalsMenuItems
+{
+	Off,
+	Smooth,	// default, shared points, averaged over the triangles around each point
+	Flat	// every triangle has its own points (like Facet SOP > Unique Points)
 };
 #pragma endregion
 
@@ -48,6 +58,9 @@ public:
 
 	// skip interior points?
 	static bool		evalSkipInteriorPoints(const TD::OP_Inputs* input);
+
+	// Normals
+	static NormalsMenuItems	evalNormals(const TD::OP_Inputs* input);
 
 };
 #pragma endregion

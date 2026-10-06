@@ -40,7 +40,7 @@ enum class ModifierMenuItems
 enum class NormalsMenuItems
 {
 	Off,
-	Mesh,	// default, computed from the output triangles
+	Smooth,	// default, averaged over the triangles around each point
 	Surface	// exact normals of the OpenCascade surfaces
 };
 #pragma endregion

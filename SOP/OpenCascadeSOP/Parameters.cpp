@@ -137,17 +137,17 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 		p.name = NormalsName;
 		p.label = NormalsLabel;
 		p.page = "OpenCascade";
-		p.defaultValue = "Mesh";
+		p.defaultValue = "Smooth";
 		std::array<const char*, 3> Names =
 		{
 			"Off",
-			"Mesh",
+			"Smooth",
 			"Surface"
 		};
 		std::array<const char*, 3> Labels =
 		{
 			"Off",
-			"Mesh",
+			"Smooth",
 			"Surface"
 		};
 		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());

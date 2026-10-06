@@ -61,11 +61,13 @@ private:
 		bool			useOptimalAlpha;
 		bool			skipInteriorPoints;
 		double			alpha;
+		NormalsMenuItems	normals;
 
 		bool operator==(const CacheKey& o) const
 		{
 			return mode == o.mode && useOptimalAlpha == o.useOptimalAlpha &&
-				skipInteriorPoints == o.skipInteriorPoints && alpha == o.alpha;
+				skipInteriorPoints == o.skipInteriorPoints && alpha == o.alpha &&
+				normals == o.normals;
 		}
 	};
 
@@ -73,6 +75,7 @@ private:
 	CacheKey					myCachedKey{};
 	std::vector<TD::Position>	myCachedInput;
 	std::vector<TD::Position>	myCachedPoints;
+	std::vector<TD::Vector>		myCachedNormals;
 	std::vector<int32_t>		myCachedIndices;
 	std::vector<int32_t>		myCachedLineIndices;
 	std::vector<int32_t>		myCachedLineSizes;

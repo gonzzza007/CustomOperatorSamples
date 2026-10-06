@@ -3,7 +3,7 @@ Applies an [OpenCascade (OCCT)](https://dev.opencascade.org) modifier (Chamfer, 
 
 Works best with flat-faced input (boxes, low-poly models). Smooth meshes (e.g. Sphere SOP) have no real edges, every triangle edge is treated as one.
 
-OCCT is linked dynamically.
+OCCT libraries are linked dynamically.
 
 MacOS: *brew install opencascade*. The plugin loads the Homebrew OCCT libraries at runtime.
 
@@ -13,14 +13,14 @@ Windows: use [vcpkg](https://vcpkg.io/) (classic mode with `vcpkg integrate inst
 * **Modifier** - select the OCCT modifier.
   * **Fillet** - rounds the edges (BRepFilletAPI_MakeFillet).
   * **Chamfer** - bevels the edges (BRepFilletAPI_MakeChamfer).
-  * **Chamfer (Plane Cut)** - bevels convex parts (boxes, KDTree / Voronoi cells) by cutting them with one plane per edge, halfway between its two faces. Never fails on thin parts: once the distance is over half a face's width the bevels meet in a ridge or a point and the face disappears; a part smaller than the distance is cut away completely. Faster than Chamfer for animated input. Where three bevels meet the corner is a point, not a small triangle like in Chamfer. Parts that are not convex use the regular Chamfer.
+  * **Chamfer (Plane Cut)** - bevels convex parts by cutting them with one plane per edge, halfway between its two faces. Never fails on thin parts: once the distance is over half a face's width the bevels meet in a ridge or a point and the face disappears; a part smaller than the distance is cut away completely. Faster than Chamfer for animated input. Where three bevels meet the corner is a point, not a small triangle like in Chamfer. Parts that are not convex use the regular Chamfer.
 * **Radius / Distance** - fillet radius or chamfer distance. 0 outputs the input unmodified (triangulated).
 * **Min Edge Angle** - only edges whose faces meet at a larger angle (degrees) are modified.
 * **Mesh Deflection** - max distance between the output triangles and the real surface, smaller is smoother.
 * **Mesh Angular Deflection** - max angle (degrees) between neighbouring triangles on curved surfaces.
 * **Normals** - how the point normals are computed.
   * **Off** - no normals.
-  * **Mesh** (default) - from the output triangles, like Attribute Create SOP > Compute Normals. Always matches the drawn triangles.
+  * **Smooth** (default) - every point gets the average of the normals of its triangles, weighted by the triangle angle at that point (like Attribute Create SOP > Compute Normals). Always matches the drawn triangles. Every OpenCascade face has its own points, so normals stay sharp across the edges between faces.
   * **Surface** - exact normals of the OpenCascade surfaces. Smoothest on fillets, but on thin faces the triangles can be tilted against them (float precision of the input), which shows as shading artifacts.
 
 ## Notes
