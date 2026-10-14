@@ -24,7 +24,15 @@
 #include <CGAL/Fixed_alpha_shape_vertex_base_3.h>
 #include <CGAL/Fixed_alpha_shape_cell_base_3.h>
 
+#ifdef CGAL_LINKED_WITH_TBB
+#include <CGAL/Spatial_lock_grid_3.h>
+#include <tbb/global_control.h>
+#include <tbb/task_arena.h>
+#include <memory>
+#endif
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -32,6 +40,15 @@
 
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel		Gt;
+
+// With TBB the Delaunay triangulation is built in parallel (see triangulate())
+#ifdef CGAL_LINKED_WITH_TBB
+typedef CGAL::Parallel_tag																		Concurrency_tag;
+typedef CGAL::Spatial_lock_grid_3<CGAL::Tag_priority_blocking>	Lock_ds;
+#else
+typedef CGAL::Sequential_tag																	Concurrency_tag;
+typedef CGAL::Default																					Lock_ds;
+#endif
 //typedef CGAL::Tag_true                                        Alpha_cmp_tag;
 
 typedef CGAL::Alpha_shape_vertex_base_3<Gt>										Vb;
@@ -40,8 +57,8 @@ typedef CGAL::Alpha_shape_vertex_base_3<Gt>										Vb;
 typedef CGAL::Alpha_shape_cell_base_3<Gt>											Fb;
 //typedef CGAL::Alpha_shape_cell_base_3<Gt, CGAL::Default, Alpha_cmp_tag>     Fb;
 
-typedef CGAL::Triangulation_data_structure_3<Vb, Fb>					Tds;
-typedef CGAL::Delaunay_triangulation_3<Gt, Tds>								Triangulation_3;
+typedef CGAL::Triangulation_data_structure_3<Vb, Fb, Concurrency_tag>	Tds;
+typedef CGAL::Delaunay_triangulation_3<Gt, Tds, CGAL::Default, Lock_ds>	Triangulation_3;
 
 typedef CGAL::Alpha_shape_3<Triangulation_3> 									Alpha_shape_3;
 //typedef CGAL::Alpha_shape_3<Triangulation_3, Alpha_cmp_tag> 	Alpha_shape_3;
@@ -57,12 +74,37 @@ typedef Alpha_shape_3::Cell_handle														Cell_handle;
 // much cheaper than Alpha_shape_3 when the optimal alpha search is not needed
 typedef CGAL::Fixed_alpha_shape_vertex_base_3<Gt>							FVb;
 typedef CGAL::Fixed_alpha_shape_cell_base_3<Gt>								FCb;
-typedef CGAL::Triangulation_data_structure_3<FVb, FCb>				FTds;
-typedef CGAL::Delaunay_triangulation_3<Gt, FTds>							FTriangulation_3;
+typedef CGAL::Triangulation_data_structure_3<FVb, FCb, Concurrency_tag>	FTds;
+typedef CGAL::Delaunay_triangulation_3<Gt, FTds, CGAL::Default, Lock_ds>	FTriangulation_3;
 typedef CGAL::Fixed_alpha_shape_3<FTriangulation_3>						Fixed_alpha_shape_3;
 
 namespace
 {
+
+// Delaunay triangulation of the points. With TBB the points are inserted in parallel:
+// that needs a lock grid over the bounding box of the points, only during insertion
+template <class DT>
+void
+triangulate(DT& dt, const std::vector<Point>& lp)
+{
+#ifdef CGAL_LINKED_WITH_TBB
+	if (!lp.empty()) {
+		CGAL::Bbox_3 bb = CGAL::bbox_3(lp.begin(), lp.end());
+		// the grid divides by the box size: pad flat axes (coplanar/collinear input)
+		auto pad = [](double lo, double hi) { return hi > lo ? 0.0 : 1.0; };
+		bb = CGAL::Bbox_3(
+			bb.xmin() - pad(bb.xmin(), bb.xmax()), bb.ymin() - pad(bb.ymin(), bb.ymax()), bb.zmin() - pad(bb.zmin(), bb.zmax()),
+			bb.xmax() + pad(bb.xmin(), bb.xmax()), bb.ymax() + pad(bb.ymin(), bb.ymax()), bb.zmax() + pad(bb.zmin(), bb.zmax()));
+
+		typename DT::Lock_data_structure locks(bb, 100);
+		dt.set_lock_data_structure(&locks);
+		dt.insert(lp.begin(), lp.end());
+		dt.set_lock_data_structure(nullptr);
+		return;
+	}
+#endif
+	dt.insert(lp.begin(), lp.end());
+}
 
 // Collects the geometry of an alpha shape (works for both Alpha_shape_3 and Fixed_alpha_shape_3):
 //   Regularized: REGULAR facets (surface of the solid part)
@@ -230,9 +272,11 @@ FillSOPPluginInfo(SOP_PluginInfo *info)
 	OP_CustomOPInfo& customInfo = info->customOPInfo;
 
 	// Unique name of the node which starts with an upper case letter, followed by lower case letters or numbers
-	customInfo.opType->setString("Alphashapes");
+	customInfo.opType->setString("Alphashapesparallel");
 	// English readable name
-	customInfo.opLabel->setString("Alpha Shapes");
+	customInfo.opLabel->setString("Alpha Shapes Parallel");
+	// Three letter icon in the OP Create dialog, otherwise made from the label (same as Alpha Shapes)
+	customInfo.opIcon->setString("ASP");
 	// Information of the author of the node
 	customInfo.authorName->setString("Valentin Siltsenko");
 	customInfo.authorEmail->setString("gonzzza@gmail.com");
@@ -298,6 +342,7 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 	bool skipInteriorPoints = myParms.evalSkipInteriorPoints(inputs);
 	double alpha = myParms.evalAlpha(inputs);
 	NormalsMenuItems normals = myParms.evalNormals(inputs);
+	int threads = myParms.evalThreads(inputs);
 
 	bool general = mode == ModeMenuItems::General;
 	bool flat = normals == NormalsMenuItems::Flat;
@@ -308,7 +353,8 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		useOptimalAlpha,
 		skipInteriorPoints,
 		useOptimalAlpha ? 0.0 : alpha,
-		normals
+		normals,
+		threads
 	};
 
 	const Position* inPos = sop->getPointPositions();
@@ -325,6 +371,20 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		myCachedKey = key;
 		myCachedWarning.clear();
 
+#ifdef CGAL_LINKED_WITH_TBB
+		// Limits the TBB worker threads while it is alive, 0 = all cores
+		std::unique_ptr<tbb::global_control> threadLimit;
+		if (threads > 0)
+			threadLimit = std::make_unique<tbb::global_control>(tbb::global_control::max_allowed_parallelism, threads);
+#endif
+
+		using Clock = std::chrono::steady_clock;
+		auto ms = [](Clock::time_point a, Clock::time_point b) {
+			return static_cast<float>(std::chrono::duration<double, std::milli>(b - a).count());
+		};
+		const auto tStart = Clock::now();
+		Clock::time_point tTri, tAlpha;
+
 		std::vector<Point> lp;
 		lp.reserve(numPoints);
 		for (int i = 0; i < numPoints; ++i) {
@@ -335,7 +395,10 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 			// Full alpha spectrum is needed to search for the optimal alpha value.
 			// Mode is passed to the constructor: calling set_mode() afterwards
 			// re-initializes the alpha maps and re-sorts the alpha spectrum
-			Alpha_shape_3 as(lp.begin(), lp.end(), 0,
+			Triangulation_3 dt;
+			triangulate(dt, lp);
+			tTri = Clock::now();
+			Alpha_shape_3 as(dt, 0,
 				general ? Alpha_shape_3::GENERAL : Alpha_shape_3::REGULARIZED);
 
 			if (as.dimension() == 3) {
@@ -350,6 +413,7 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 					myCachedWarning = buffer.str();
 				}
 			}
+			tAlpha = Clock::now();
 
 			extractShape(as, general, skipInteriorPoints, flat,
 				myCachedPoints, myCachedIndices, myCachedLineIndices);
@@ -357,16 +421,33 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 			// Single alpha value: no need for the alpha spectrum.
 			// Fixed_alpha_shape_3 always classifies like GENERAL mode,
 			// extractShape() drops SINGULAR faces for Regularized
-			Fixed_alpha_shape_3 as(lp.begin(), lp.end(), alpha);
+			FTriangulation_3 dt;
+			triangulate(dt, lp);
+			tTri = Clock::now();
+			Fixed_alpha_shape_3 as(dt, alpha);
+			tAlpha = Clock::now();
 			extractShape(as, general, skipInteriorPoints, flat,
 				myCachedPoints, myCachedIndices, myCachedLineIndices);
 		}
 
+		const auto tExtract = Clock::now();
 		myCachedLineSizes.assign(myCachedLineIndices.size() / 2, 2);
 
 		myCachedNormals.clear();
 		if (normals != NormalsMenuItems::Off)
 			computeNormals(myCachedPoints, myCachedIndices, myCachedNormals);
+		const auto tEnd = Clock::now();
+
+		myTimings.triangulation = ms(tStart, tTri);
+		myTimings.alpha = ms(tTri, tAlpha);
+		myTimings.extract = ms(tAlpha, tExtract);
+		myTimings.normals = ms(tExtract, tEnd);
+		myTimings.total = ms(tStart, tEnd);
+#ifdef CGAL_LINKED_WITH_TBB
+		myTimings.threads = static_cast<float>(tbb::this_task_arena::max_concurrency());
+#else
+		myTimings.threads = 1.0f;
+#endif
 
 		myHasCache = true;
 	}
@@ -385,6 +466,28 @@ AlphaShapesSOP::execute(SOP_Output* output, const TD::OP_Inputs* inputs, void*)
 		output->addLines(myCachedLineIndices.data(), myCachedLineSizes.data(),
 			static_cast<int32_t>(myCachedLineSizes.size()));
 	}
+}
+
+int32_t
+AlphaShapesSOP::getNumInfoCHOPChans(void*)
+{
+	return 6;
+}
+
+void
+AlphaShapesSOP::getInfoCHOPChan(int32_t index, OP_InfoCHOPChan* chan, void*)
+{
+	// Timings of the last computation in milliseconds, and the threads TBB could use
+	const std::pair<const char*, float> chans[] = {
+		{ "triangulation_ms", myTimings.triangulation },
+		{ "alpha_ms", myTimings.alpha },
+		{ "extract_ms", myTimings.extract },
+		{ "normals_ms", myTimings.normals },
+		{ "total_ms", myTimings.total },
+		{ "threads", myTimings.threads }
+	};
+	chan->name->setString(chans[index].first);
+	chan->value = chans[index].second;
 }
 
 void

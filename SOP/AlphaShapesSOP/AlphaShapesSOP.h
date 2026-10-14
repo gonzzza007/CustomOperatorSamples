@@ -47,6 +47,10 @@ public:
 
 	virtual void		getWarningString(TD::OP_String*, void*) override;
 
+	virtual int32_t		getNumInfoCHOPChans(void*) override;
+
+	virtual void		getInfoCHOPChan(int32_t index, TD::OP_InfoCHOPChan* chan, void*) override;
+
 
 private:
 	std::string			myWarningString;
@@ -62,12 +66,13 @@ private:
 		bool			skipInteriorPoints;
 		double			alpha;
 		NormalsMenuItems	normals;
+		int				threads;	// doesn't change the result, but recomputes to compare timings
 
 		bool operator==(const CacheKey& o) const
 		{
 			return mode == o.mode && useOptimalAlpha == o.useOptimalAlpha &&
 				skipInteriorPoints == o.skipInteriorPoints && alpha == o.alpha &&
-				normals == o.normals;
+				normals == o.normals && threads == o.threads;
 		}
 	};
 
@@ -80,6 +85,13 @@ private:
 	std::vector<int32_t>		myCachedLineIndices;
 	std::vector<int32_t>		myCachedLineSizes;
 	std::string					myCachedWarning;
+
+	// Info CHOP: timings of the last computation in milliseconds
+	struct Timings
+	{
+		float	triangulation = 0, alpha = 0, extract = 0, normals = 0, total = 0, threads = 0;
+	};
+	Timings						myTimings;
 };
 
 #endif // !__AlphaShapesSOP__

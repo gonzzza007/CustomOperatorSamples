@@ -37,6 +37,12 @@ Parameters::evalNormals(const TD::OP_Inputs* input)
 	return static_cast<NormalsMenuItems>(input->getParInt(NormalsName));
 }
 
+int
+Parameters::evalThreads(const TD::OP_Inputs* input)
+{
+	return input->getParInt(ThreadsName);
+}
+
 
 
 
@@ -122,6 +128,20 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 			"Flat"
 		};
 		OP_ParAppendResult res = manager->appendMenu(p, int(Names.size()), Names.data(), Labels.data());
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	{
+		OP_NumericParameter p;
+		p.name = ThreadsName;
+		p.label = ThreadsLabel;
+		p.page = "Alpha Shapes";
+		p.defaultValues[0] = 0;
+		p.minSliders[0] = 0;
+		p.maxSliders[0] = 32;
+		p.minValues[0] = 0;
+		p.clampMins[0] = true;
+		OP_ParAppendResult res = manager->appendInt(p);
 		assert(res == OP_ParAppendResult::Success);
 	}
 

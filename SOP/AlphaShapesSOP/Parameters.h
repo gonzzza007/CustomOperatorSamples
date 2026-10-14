@@ -24,6 +24,9 @@ constexpr static char SkipInteriorPointsLabel[] = "Skip interior points";
 constexpr static char NormalsName[] = "Normals";
 constexpr static char NormalsLabel[] = "Normals";
 
+constexpr static char ThreadsName[] = "Threads";
+constexpr static char ThreadsLabel[] = "Threads (0 = all cores)";
+
 #pragma endregion
 
 #pragma region Menus
@@ -61,6 +64,9 @@ public:
 
 	// Normals
 	static NormalsMenuItems	evalNormals(const TD::OP_Inputs* input);
+
+	// Max threads for the parallel triangulation, 0 = all cores
+	static int		evalThreads(const TD::OP_Inputs* input);
 
 };
 #pragma endregion
