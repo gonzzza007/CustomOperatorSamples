@@ -17,6 +17,10 @@ Alpha Shapes algorithm for converting input points to closed mesh. Using CGAL 6.
 OpenCascade algorithms to modify the shape edges: create fillet or chamfer.
 https://occt3d.com/dev/doc/overview/html/index.html
 
+## SoftBodySOP
+
+Soft body blobs trapped inside a closed container (e.g. a 1x1x1 box). Input 1 is the container mesh, input 2 the seed points (one blob per point, e.g. from a Sprinkle SOP). XPBD solver with edge, volume and shape-matching constraints, blob-to-blob collisions and a signed distance field for the container. See [SOP/SoftBodySOP/README.md](SOP/SoftBodySOP/README.md).
+
 ----------------------------------------------------------------
 
 **Windows Visual Studio** Release \*.dll are copied to *%USERPROFILE%\Documents\Derivative\Plugins*
@@ -81,6 +85,7 @@ A few basic examples can be found in the Samples/CPlusPlus folder of the TouchDe
   * [GeneratorSOP](SOP/GeneratorSOP)
   * [IntersectPointsSOP](SOP/IntersectPointsSOP)
   * [OpenCascadeSOP](SOP/OpenCascadeSOP)
+  * [SoftBodySOP](SOP/SoftBodySOP)
   * [SpiralSOP](SOP/SpiralSOP)
   * [SprinkleSOP](SOP/SprinkleSOP)
   * [WrapPointsSOP](SOP/WrapPointsSOP)
