@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <map>
 #include <random>
 
 namespace sb
@@ -12,6 +14,7 @@ namespace
 {
 
 constexpr float Pi = 3.14159265358979f;
+constexpr float MaxStretch = 1.3f;	// edges may stretch at most this much beyond their rest length
 
 // --- Small quaternion helpers for shape matching ---------------------------------------
 
@@ -76,15 +79,46 @@ frictionCorrection(const Vec3& relDisp, const Vec3& n, float penetration, float 
 	return dt * std::min(friction * penetration / lt, 1.0f);
 }
 
-int64_t
+uint64_t
 cellKey(int x, int y, int z)
 {
-	return (static_cast<int64_t>(x) * 73856093) ^ (static_cast<int64_t>(y) * 19349663) ^ (static_cast<int64_t>(z) * 83492791);
+	uint64_t k = (static_cast<uint64_t>(static_cast<uint32_t>(x)) * 0x9E3779B97F4A7C15ull)
+			   ^ (static_cast<uint64_t>(static_cast<uint32_t>(y)) * 0xC2B2AE3D27D4EB4Full)
+			   ^ (static_cast<uint64_t>(static_cast<uint32_t>(z)) * 0x165667B19E3779F9ull);
+	k ^= k >> 29;
+	k *= 0xBF58476D1CE4E5B9ull;
+	return k ^ (k >> 32);
 }
 
 }
 
 // ---------------------------------------------------------------------------------------
+
+// Largest scale s in (0, 1] so that all blobs at radius s * target, plus their collision skin,
+// take at most `budget` volume. The skin keeps blobs apart, so it occupies space too.
+static float
+budgetScale(const std::vector<float>& targets, const std::vector<float>& unitVolumes, float skin, float budget)
+{
+	auto occupied = [&](float scale)
+	{
+		float v = 0.0f;
+		for (size_t i = 0; i < targets.size(); ++i)
+		{
+			float r = targets[i] * scale + skin;
+			v += unitVolumes[i] * r * r * r;
+		}
+		return v;
+	};
+	if (targets.empty() || occupied(1.0f) <= budget)
+		return 1.0f;
+	float lo = 0.0f, hi = 1.0f;
+	for (int i = 0; i < 30; ++i)
+	{
+		float mid = 0.5f * (lo + hi);
+		(occupied(mid) > budget ? hi : lo) = mid;
+	}
+	return lo;
+}
 
 float
 SoftBodySolver::complianceFromStiffness(float stiffness)
@@ -96,108 +130,174 @@ SoftBodySolver::complianceFromStiffness(float stiffness)
 	return 1e-2f * std::pow(1e-6f, stiffness);
 }
 
+static std::vector<float>
+radiusFractions(uint32_t seed, size_t count)
+{
+	std::mt19937 rng(seed);
+	std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+	std::vector<float> f(count);
+	for (float& v : f)
+		v = uni(rng);
+	return f;
+}
+
+float
+SoftBodySolver::targetRadius(const Blob& b, const std::vector<float>& fractions) const
+{
+	if (b.radiusOverride > 0.0f)
+		return b.radiusOverride;
+	float lo = std::max(std::min(myRadiusMin, myRadiusMax), 1e-4f);
+	float hi = std::max(myRadiusMin, myRadiusMax);
+	float u = static_cast<size_t>(b.seedIndex) < fractions.size() ? fractions[b.seedIndex] : 0.5f;
+	return lo + (hi - lo) * u;
+}
+
+void
+SoftBodySolver::setTargetRadii(float radiusMin, float radiusMax, uint32_t seed)
+{
+	if (radiusMin == myRadiusMin && radiusMax == myRadiusMax && seed == mySeed)
+		return;
+	if (seed != mySeed)
+		myRadiusFractions = radiusFractions(seed, myRadiusFractions.size());	// one per seed point
+	myRadiusMin = radiusMin;
+	myRadiusMax = radiusMax;
+	mySeed = seed;
+	for (Blob& b : myBlobs)
+		b.target = targetRadius(b, myRadiusFractions);
+}
+
+void
+SoftBodySolver::updateBlobScale(Blob& b, int32_t)
+{
+	const float r = b.radius;
+	b.restVolume = b.unitVolume * r * r * r;
+
+	float mass = myMassMode == MassMode::Density ? myMassValue * (4.0f / 3.0f) * Pi * r * r * r : myMassValue;
+	if (b.massOverride > 0.0f)
+		mass = b.massOverride;
+	const float w = static_cast<float>(b.pointCount) / std::max(mass, 1e-6f);
+	for (int32_t i = b.pointStart; i < b.pointStart + b.pointCount; ++i)
+		myW[i] = w;
+}
+
 ResetReport
 SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOverrides>& overrides,
 						const GenerationSettings& gen, const ContainerSDF* container)
 {
 	ResetReport report;
 
-	myX.clear(); myPrev.clear(); myV.clear(); myVPre.clear(); myRest.clear(); myContactN.clear();
+	myX.clear(); myPrev.clear(); myV.clear(); myVPre.clear(); myRestUnit.clear(); myContactN.clear();
 	myW.clear(); myBlobOf.clear(); myInContact.clear();
-	myTriangles.clear(); myEdges.clear(); myEdgeLambda.clear();
+	myTriangles.clear(); myEdges.clear(); myEdgeLambda.clear(); myBends.clear(); myBendLambda.clear();
 	myBlobs.clear(); myVolumeLambda.clear(); myPairs.clear();
 
 	const float edgeLength = std::max(gen.edgeLength, 1e-4f);
 	myParticleRadius = gen.collisionRadius > 0.0f ? gen.collisionRadius : edgeLength * 0.5f;
+	myMassMode = gen.massMode;
+	myMassValue = gen.mass;
 	const float pr = myParticleRadius;
+	const bool hasContainer = container && container->isValid();
 
-	float rMin = std::max(std::min(gen.radiusMin, gen.radiusMax), 1e-4f);
-	float rMax = std::max(gen.radiusMin, gen.radiusMax);
-	const float smallest = std::max(rMin * 0.25f, pr * 2.0f);	// below this a blob is not worth creating
-
-	// 1. Desired radii (random draws happen for every seed so the sequence is stable).
-	std::mt19937 rng(gen.seed);
-	std::uniform_real_distribution<float> uni(rMin, rMax);
+	// Target radii: a random fraction of the radius range per seed (or the seed's radius attribute).
 	const size_t n = seeds.size();
-	std::vector<float> radius(n);
+	myRadiusMin = gen.radiusMin;
+	myRadiusMax = gen.radiusMax;
+	mySeed = gen.seed;
+	myRadiusFractions = radiusFractions(gen.seed, n);
+
+	std::vector<Blob> candidates(n);
+	std::vector<uint8_t> inside(n, 1);
+	size_t numInside = 0;
 	for (size_t i = 0; i < n; ++i)
 	{
-		float r = uni(rng);
-		if (i < overrides.size() && overrides[i].radius > 0.0f)
-			r = overrides[i].radius;
-		radius[i] = r;
+		Blob& b = candidates[i];
+		b.seedIndex = static_cast<int32_t>(i);
+		if (i < overrides.size())
+		{
+			b.radiusOverride = overrides[i].radius;
+			b.massOverride = overrides[i].mass;
+			if (overrides[i].stiffness >= 0.0f)
+				b.stiffness = std::clamp(overrides[i].stiffness, 0.0f, 1.0f);
+		}
+		b.target = targetRadius(b, myRadiusFractions);
+		if (hasContainer && container->distance(seeds[i]) >= 0.0f)
+		{
+			inside[i] = 0;
+			++report.seedsOutside;
+		}
+		else
+			++numInside;
 	}
 
-	// 2. Shrink radii so blobs neither overlap each other nor the container walls.
-	std::vector<uint8_t> accepted(n, 0);
+	// Mesh resolution is planned for the size a blob will actually reach: its target, scaled down
+	// the same way the Fill budget will scale it during the simulation. Without a container, fall
+	// back to a share of nothing in particular: the target itself.
+	float planScale = 1.0f;
+	if (hasContainer && numInside > 0)
+	{
+		std::vector<float> targets, unitVolumes;
+		for (size_t i = 0; i < n; ++i)
+		{
+			if (!inside[i])
+				continue;
+			targets.push_back(candidates[i].target);
+			unitVolumes.push_back(4.0f / 3.0f * Pi);
+		}
+		const float budget = std::clamp(gen.fill, 0.01f, 0.99f) * container->insideVolume() / std::max(gen.pressure, 0.01f);
+		planScale = budgetScale(targets, unitVolumes, pr, budget);
+	}
+
+	// Spawn radius: the target, shrunk so blobs neither overlap each other nor the walls.
+	// Blobs that don't fit start small and grow into place, squeezing their neighbours.
+	const float smallest = std::max(1.5f * pr, 1e-4f);
+	std::vector<float> spawn(n, 0.0f);
 	for (size_t i = 0; i < n; ++i)
 	{
-		float r = radius[i];
-		if (container && container->isValid())
+		if (!inside[i])
+			continue;
+		const float finalRadius = candidates[i].target * planScale;
+		float r = finalRadius;
+		if (hasContainer)
+			r = std::min(r, -container->distance(seeds[i]) - pr);
+		for (size_t j = 0; j < n; ++j)
 		{
-			float phi = container->distance(seeds[i]);
-			if (phi >= 0.0f)
-			{
-				++report.seedsOutside;
-				continue;
-			}
-			r = std::min(r, -phi - pr);
-		}
-		for (size_t j = 0; j < n && r > 0.0f; ++j)
-		{
-			if (j == i)
+			if (j == i || !inside[j])
 				continue;
 			float d = length(seeds[i] - seeds[j]);
 			if (j < i)
-			{
-				if (accepted[j])
-					r = std::min(r, d - radius[j] - 2.0f * pr);
-			}
+				r = std::min(r, d - spawn[j] - 2.0f * pr);
 			else
 				r = std::min(r, 0.5f * d - pr);
 		}
-		if (r < smallest)
-		{
-			++report.seedsTooTight;
-			continue;
-		}
-		radius[i] = r;
-		accepted[i] = 1;
+		if (r < finalRadius * 0.999f)
+			++report.blobsStartedSmall;
+		spawn[i] = std::max(r, smallest);
 	}
 
-	// 3. Build the blobs.
+	// Build the blobs.
 	for (size_t i = 0; i < n; ++i)
 	{
-		if (!accepted[i])
+		if (!inside[i])
 			continue;
 
-		const float	r = radius[i];
-		const int	level = icosphereLevelFor(r, edgeLength, gen.minLevel, gen.maxLevel);
-		const Icosphere& ico = getUnitIcosphere(level);
+		Blob blob = candidates[i];
+		const float	planRadius = std::max(blob.target * planScale, spawn[i]);
+		const int	frequency = geodesicFrequencyFor(planRadius, edgeLength,
+								geodesicFrequencyAtLeast(gen.minPoints), geodesicFrequencyAtMost(gen.maxPoints));
+		const Icosphere& ico = getUnitGeodesicSphere(frequency);
+		const int32_t blobId = static_cast<int32_t>(myBlobs.size());
 
-		Blob blob;
 		blob.pointStart = static_cast<int32_t>(myX.size());
 		blob.pointCount = static_cast<int32_t>(ico.points.size());
 		blob.triStart = static_cast<int32_t>(myTriangles.size() / 3);
 		blob.triCount = static_cast<int32_t>(ico.triangles.size() / 3);
-
-		float mass = gen.massMode == MassMode::Density ? gen.mass * (4.0f / 3.0f) * Pi * r * r * r : gen.mass;
-		if (i < overrides.size())
-		{
-			if (overrides[i].mass > 0.0f)
-				mass = overrides[i].mass;
-			if (overrides[i].stiffness >= 0.0f)
-				blob.stiffness = std::clamp(overrides[i].stiffness, 0.0f, 1.0f);
-		}
-		blob.mass = std::max(mass, 1e-6f);
-		const float w = static_cast<float>(blob.pointCount) / blob.mass;
-		const int32_t blobId = static_cast<int32_t>(myBlobs.size());
+		blob.radius = spawn[i];
 
 		for (const Vec3& u : ico.points)
 		{
-			myX.push_back(seeds[i] + u * r);
-			myRest.push_back(u * r);
-			myW.push_back(w);
+			myX.push_back(seeds[i] + u * blob.radius);
+			myRestUnit.push_back(u);
+			myW.push_back(1.0f);
 			myBlobOf.push_back(blobId);
 		}
 		for (int32_t idx : ico.triangles)
@@ -205,6 +305,7 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 
 		// Each edge of a closed, consistently wound mesh appears once in each direction:
 		// keeping only a < b gives every edge exactly once.
+		const size_t edgeStart = myEdges.size();
 		for (size_t t = 0; t < ico.triangles.size(); t += 3)
 		{
 			for (int e = 0; e < 3; ++e)
@@ -215,15 +316,74 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 					Edge edge;
 					edge.a = a + blob.pointStart;
 					edge.b = b + blob.pointStart;
-					edge.rest = length(ico.points[a] - ico.points[b]) * r;
+					edge.restUnit = length(ico.points[a] - ico.points[b]);
 					edge.blob = blobId;
+					blob.maxUnitEdge = std::max(blob.maxUnitEdge, edge.restUnit);
 					myEdges.push_back(edge);
 				}
 			}
 		}
 
+		// Group the edges by a greedy colouring: edges of one colour share no particle. In mesh order
+		// every edge would wait for the previous one's result, grouped they can be solved overlapped.
+		{
+			std::vector<uint64_t> used(ico.points.size(), 0);
+			std::vector<uint8_t> colour(myEdges.size() - edgeStart);
+			for (size_t e = 0; e < colour.size(); ++e)
+			{
+				const Edge& edge = myEdges[edgeStart + e];
+				uint64_t& ua = used[edge.a - blob.pointStart];
+				uint64_t& ub = used[edge.b - blob.pointStart];
+				const uint64_t taken = ua | ub;
+				uint8_t c = 0;
+				while (c < 63 && ((taken >> c) & 1))
+					++c;
+				colour[e] = c;
+				ua |= 1ull << c;
+				ub |= 1ull << c;
+			}
+			std::vector<Edge> grouped;
+			grouped.reserve(colour.size());
+			for (uint8_t c = 0, last = *std::max_element(colour.begin(), colour.end()); c <= last; ++c)
+				for (size_t e = 0; e < colour.size(); ++e)
+					if (colour[e] == c)
+						grouped.push_back(myEdges[edgeStart + e]);
+			std::copy(grouped.begin(), grouped.end(), myEdges.begin() + edgeStart);
+		}
+
+		// Bending: for every edge shared by two triangles, a soft distance constraint between the two
+		// far corners. It resists sharp folds (wrinkles) but hardly changes when a region flattens.
+		{
+			std::map<std::pair<int32_t, int32_t>, int32_t> firstOpposite;
+			for (size_t t = 0; t < ico.triangles.size(); t += 3)
+			{
+				for (int e = 0; e < 3; ++e)
+				{
+					int32_t a = ico.triangles[t + e], b = ico.triangles[t + (e + 1) % 3], c = ico.triangles[t + (e + 2) % 3];
+					auto key = std::make_pair(std::min(a, b), std::max(a, b));
+					auto it = firstOpposite.find(key);
+					if (it == firstOpposite.end())
+					{
+						firstOpposite[key] = c;
+						continue;
+					}
+					Edge bend;
+					bend.a = it->second + blob.pointStart;
+					bend.b = c + blob.pointStart;
+					bend.restUnit = length(ico.points[it->second] - ico.points[c]);
+					bend.blob = blobId;
+					myBends.push_back(bend);
+				}
+			}
+		}
+
+		float unitVolume = 0.0f;
+		for (size_t t = 0; t < ico.triangles.size(); t += 3)
+			unitVolume += dot(ico.points[ico.triangles[t]], cross(ico.points[ico.triangles[t + 1]], ico.points[ico.triangles[t + 2]]));
+		blob.unitVolume = unitVolume / 6.0f;
+
 		myBlobs.push_back(blob);
-		myBlobs.back().restVolume = blobVolume(myBlobs.back());
+		updateBlobScale(myBlobs.back(), blobId);
 		++report.blobsCreated;
 	}
 
@@ -234,7 +394,10 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 	myContactN.assign(np, Vec3());
 	myInContact.assign(np, 0);
 	myEdgeLambda.assign(myEdges.size(), 0.0f);
+	myBendLambda.assign(myBends.size(), 0.0f);
 	myVolumeLambda.assign(myBlobs.size(), 0.0f);
+	myBlobRadius.assign(myBlobs.size(), myParticleRadius);
+	myMaxBlobRadius = myParticleRadius;
 	return report;
 }
 
@@ -252,6 +415,23 @@ SoftBodySolver::blobVolume(const Blob& b) const
 	return v / 6.0f;
 }
 
+void
+SoftBodySolver::updateCollisionRadii()
+{
+	// A particle of blob A slips through a triangle of blob B if the gap at the triangle centre
+	// (edge / sqrt 3) is wider than rA + rB. Edges are strain limited to MaxStretch x rest length,
+	// so rB = 0.58 * longest possible edge - base keeps rA + rB >= edge / sqrt 3 for any blob A.
+	const size_t nb = myBlobs.size();
+	myBlobRadius.resize(nb);
+	myMaxBlobRadius = myParticleRadius;
+	for (size_t b = 0; b < nb; ++b)
+	{
+		const float longest = MaxStretch * myBlobs[b].maxUnitEdge * myBlobs[b].radius;
+		myBlobRadius[b] = std::max(myParticleRadius, 0.58f * longest - myParticleRadius);
+		myMaxBlobRadius = std::max(myMaxBlobRadius, myBlobRadius[b]);
+	}
+}
+
 float
 SoftBodySolver::currentVolumeRatio() const
 {
@@ -260,6 +440,54 @@ SoftBodySolver::currentVolumeRatio() const
 	float sum = 0.0f;
 	for (const Blob& b : myBlobs)
 		sum += b.restVolume != 0.0f ? blobVolume(b) / b.restVolume : 1.0f;
+	return sum / static_cast<float>(myBlobs.size());
+}
+
+bool
+SoftBodySolver::growBlobs(float growK, float targetScale)
+{
+	// Each blob approaches its target radius in log space: the relative change per substep is
+	// growK * ln(target / radius), capped, so a tiny blob that has to grow 6x doesn't race ahead.
+	// The particles are scaled with the rest shape around the blob's centre (before the velocity
+	// prediction), so growing moves the surface smoothly instead of making the constraints yank
+	// it outwards, which used to show up as a ripple on fast-growing small blobs.
+	constexpr float MaxStep = 0.02f;	// at most 2% size change per substep
+	bool changed = false;
+	for (size_t bi = 0; bi < myBlobs.size(); ++bi)
+	{
+		Blob& b = myBlobs[bi];
+		const float target = std::max(b.target * targetScale, 1e-4f);
+		if (b.radius == target)
+			continue;
+
+		float step = std::clamp(growK * std::log(target / b.radius), -MaxStep, MaxStep);
+		float newRadius = b.radius * std::exp(step);
+		if ((target - newRadius) * (target - b.radius) <= 0.0f || std::abs(target - newRadius) < 1e-5f * target)
+			newRadius = target;
+		const float f = newRadius / b.radius;
+
+		Vec3 c;
+		for (int32_t i = b.pointStart; i < b.pointStart + b.pointCount; ++i)
+			c += myX[i];
+		c = c / static_cast<float>(b.pointCount);
+		for (int32_t i = b.pointStart; i < b.pointStart + b.pointCount; ++i)
+			myX[i] = c + (myX[i] - c) * f;
+
+		b.radius = newRadius;
+		updateBlobScale(b, static_cast<int32_t>(bi));
+		changed = true;
+	}
+	return changed;
+}
+
+float
+SoftBodySolver::growRatio() const
+{
+	if (myBlobs.empty())
+		return 1.0f;
+	float sum = 0.0f;
+	for (const Blob& b : myBlobs)
+		sum += b.target > 0.0f ? b.radius / (b.target * myTargetScale) : 1.0f;
 	return sum / static_cast<float>(myBlobs.size());
 }
 
@@ -277,6 +505,8 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 	const size_t np = myX.size();
 
 	const float edgeCompliance = complianceFromStiffness(sim.stiffness);
+	// Bending stays out of the stiffest part of the range: even 1 allows gentle curvature changes.
+	const float bendCompliance = sim.bending > 0.0f ? complianceFromStiffness(0.8f * std::clamp(sim.bending, 0.0f, 1.0f)) : -1.0f;
 	// Volume Stiffness 0 should still give a squashy blob, not a deflated bag: use the upper part of the range.
 	const float volCompliance = complianceFromStiffness(0.4f + 0.6f * std::clamp(sim.volumeStiffness, 0.0f, 1.0f));
 	const float shapeK = std::clamp(sim.shapeMemory, 0.0f, 1.0f);
@@ -286,8 +516,36 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 	const float dampFactor = std::exp(-std::max(sim.damping, 0.0f) * h);
 	const bool	useContainer = container && container->isValid();
 
+	// Grow (or shrink) the blobs' rest size towards their target radius. The targets are scaled
+	// down uniformly so that all blobs together, including their collision skin, take at most Fill of
+	// the container volume. Asking for more than fits is what makes blobs overlap: the constraints
+	// can't all be met. Near full packing the volume constraints flatten the blobs against each other.
+	float targetScale = 1.0f;
+	if (useContainer && !myBlobs.empty())
+	{
+		thread_local std::vector<float> targets, unitVolumes;
+		targets.clear();
+		unitVolumes.clear();
+		for (const Blob& b : myBlobs)
+		{
+			targets.push_back(b.target);
+			unitVolumes.push_back(b.unitVolume);
+		}
+		const float budget = std::clamp(sim.fill, 0.01f, 0.99f) * container->insideVolume() / std::max(sim.pressure, 0.01f);
+		targetScale = budgetScale(targets, unitVolumes, myParticleRadius, budget);
+	}
+	myTargetScale = targetScale;
+
+	// Growth happens a little every substep (see growBlobs) so small blobs don't pop.
+	const float growK = 1.0f - std::exp(-std::max(sim.growSpeed, 0.0f) * h);
+
+	updateCollisionRadii();
+
 	for (int s = 0; s < substeps; ++s)
 	{
+		if (growK > 0.0f && growBlobs(growK, targetScale))
+			updateCollisionRadii();
+
 		// Predict
 		for (size_t i = 0; i < np; ++i)
 		{
@@ -313,14 +571,26 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 			}
 		}
 		std::fill(myEdgeLambda.begin(), myEdgeLambda.end(), 0.0f);
+		std::fill(myBendLambda.begin(), myBendLambda.end(), 0.0f);
 		std::fill(myVolumeLambda.begin(), myVolumeLambda.end(), 0.0f);
 
 		for (int it = 0; it < iterations; ++it)
 		{
 			solveEdges(h2, edgeCompliance);
+			if (bendCompliance >= 0.0f)
+				solveBends(h2, bendCompliance);
 			solveVolumes(h2, volCompliance, std::max(sim.pressure, 0.01f));
 			if (shapeKIter > 0.0f)
 				solveShapeMatching(shapeKIter);
+			solveContacts(friction);
+			if (useContainer)
+				solveContainer(*container, friction);
+		}
+
+		// Collisions get the last word: when blobs are packed tighter than their rest volume allows,
+		// the volume gives way (and growth stops) instead of blobs tunnelling into each other.
+		for (int it = 0; it < 4; ++it)
+		{
 			solveContacts(friction);
 			if (useContainer)
 				solveContainer(*container, friction);
@@ -355,18 +625,20 @@ SoftBodySolver::buildContactPairs()
 		return;
 
 	const size_t np = myX.size();
-	const float	searchDist = 2.0f * myParticleRadius * 1.5f;	// margin: pairs stay valid for the whole substep
+	const float	searchDist = 2.0f * myMaxBlobRadius * 1.5f;	// margin: pairs stay valid for the whole substep
 	const float	searchDist2 = searchDist * searchDist;
 	const float	inv = 1.0f / searchDist;						// cell size = search distance
 
 	// Counting sort of particles into a hash table.
-	const uint32_t tableSize = static_cast<uint32_t>(std::max<size_t>(np, 64));
+	uint32_t tableSize = 64;
+	while (tableSize < 2 * np)
+		tableSize <<= 1;
 	myCellStart.assign(tableSize + 1, 0);
 	myCellEntries.resize(np);
 
 	auto hashOf = [&](int cx, int cy, int cz)
 	{
-		return static_cast<uint32_t>(static_cast<uint64_t>(cellKey(cx, cy, cz)) % tableSize);
+		return static_cast<uint32_t>(cellKey(cx, cy, cz)) & (tableSize - 1);
 	};
 	auto cellOf = [&](const Vec3& p, int& cx, int& cy, int& cz)
 	{
@@ -445,31 +717,79 @@ SoftBodySolver::buildContactPairs()
 	for (uint32_t i : myActive)
 		myCellEntries[--myCellStart[hashes[i]]] = i;
 
-	// Query the 27 neighbouring cells.
+	// Copies in bucket order, so the query below reads contiguous memory.
+	const size_t numActive = myActive.size();
+	myCellX.resize(numActive);
+	myCellBlob.resize(numActive);
+	for (size_t e = 0; e < numActive; ++e)
+	{
+		myCellX[e] = myX[myCellEntries[e]];
+		myCellBlob[e] = myBlobOf[myCellEntries[e]];
+	}
+
+	// Query the 27 neighbouring cells. Cells that hash to the same bucket are visited once,
+	// so every pair is found exactly once.
 	for (uint32_t i : myActive)
 	{
 		int cx, cy, cz;
 		cellOf(myX[i], cx, cy, cz);
 		const int32_t bi = myBlobOf[i];
+		const Vec3 xi = myX[i];
+
+		uint32_t buckets[27];
+		int numBuckets = 0;
 		for (int dz = -1; dz <= 1; ++dz)
 			for (int dy = -1; dy <= 1; ++dy)
 				for (int dx = -1; dx <= 1; ++dx)
 				{
-					uint32_t hsh = hashOf(cx + dx, cy + dy, cz + dz);
-					for (uint32_t e = myCellStart[hsh]; e < myCellStart[hsh + 1]; ++e)
-					{
-						uint32_t j = myCellEntries[e];
-						if (j <= i || myBlobOf[j] == bi)
-							continue;
-						if (length2(myX[i] - myX[j]) < searchDist2)
-							myPairs.emplace_back(static_cast<int32_t>(i), static_cast<int32_t>(j));
-					}
+					const uint32_t hsh = hashOf(cx + dx, cy + dy, cz + dz);
+					if (std::find(buckets, buckets + numBuckets, hsh) == buckets + numBuckets)
+						buckets[numBuckets++] = hsh;
 				}
-	}
 
-	// Hash collisions can report the same pair from different cells.
-	std::sort(myPairs.begin(), myPairs.end());
-	myPairs.erase(std::unique(myPairs.begin(), myPairs.end()), myPairs.end());
+		for (int c = 0; c < numBuckets; ++c)
+		{
+			const uint32_t hsh = buckets[c];
+			for (uint32_t e = myCellStart[hsh]; e < myCellStart[hsh + 1]; ++e)
+			{
+				if (myCellBlob[e] == bi || length2(xi - myCellX[e]) >= searchDist2)
+					continue;
+				const uint32_t j = myCellEntries[e];
+				if (j > i)
+					myPairs.emplace_back(static_cast<int32_t>(i), static_cast<int32_t>(j));
+			}
+		}
+	}
+}
+
+void
+SoftBodySolver::solveBends(float h2, float compliance)
+{
+	Vec3*			x = myX.data();
+	const float*	w = myW.data();
+	float*			lambda = myBendLambda.data();
+	const float		alphaScale = compliance / h2;
+	for (size_t e = 0; e < myBends.size(); ++e)
+	{
+		const Edge& bend = myBends[e];
+		Vec3	d = x[bend.a] - x[bend.b];
+		float	len2 = length2(d);
+		if (len2 < 1e-18f)
+			continue;
+		float	len = std::sqrt(len2);
+		float	wa = w[bend.a], wb = w[bend.b];
+		float	wsum = wa + wb;
+		if (wsum <= 0.0f)
+			continue;
+
+		const float rest = bend.restUnit * myBlobs[bend.blob].radius;
+		float	alpha = wsum * alphaScale;
+		float	dl = (-(len - rest) - alpha * lambda[e]) / (wsum + alpha);
+		lambda[e] += dl;
+		const Vec3 c = d * (dl / len);
+		x[bend.a] += c * wa;
+		x[bend.b] -= c * wb;
+	}
 }
 
 void
@@ -478,28 +798,48 @@ SoftBodySolver::solveEdges(float h2, float globalCompliance)
 	// Per-blob compliance (blobs may override the global stiffness).
 	thread_local std::vector<float> blobCompliance;
 	blobCompliance.resize(myBlobs.size());
+	thread_local std::vector<float> blobRadius;
+	blobCompliance.resize(myBlobs.size());
+	blobRadius.resize(myBlobs.size());
 	for (size_t b = 0; b < myBlobs.size(); ++b)
-		blobCompliance[b] = myBlobs[b].stiffness >= 0.0f ? complianceFromStiffness(myBlobs[b].stiffness) : globalCompliance;
+	{
+		const float compliance = myBlobs[b].stiffness >= 0.0f ? complianceFromStiffness(myBlobs[b].stiffness) : globalCompliance;
+		blobCompliance[b] = compliance / h2;
+		blobRadius[b] = myBlobs[b].radius;
+	}
 
-	for (size_t e = 0; e < myEdges.size(); ++e)
+	Vec3*			x = myX.data();
+	const float*	w = myW.data();
+	float*			lambda = myEdgeLambda.data();
+	const size_t	numEdges = myEdges.size();
+	for (size_t e = 0; e < numEdges; ++e)
 	{
 		const Edge& edge = myEdges[e];
-		Vec3	d = myX[edge.a] - myX[edge.b];
-		float	len = length(d);
-		if (len < 1e-9f)
+		Vec3	d = x[edge.a] - x[edge.b];
+		float	len2 = length2(d);
+		if (len2 < 1e-18f)
 			continue;
-		Vec3	n = d / len;
-		float	wa = myW[edge.a], wb = myW[edge.b];
+		float	len = std::sqrt(len2);
+		float	wa = w[edge.a], wb = w[edge.b];
 		float	wsum = wa + wb;
 		if (wsum <= 0.0f)
 			continue;
 
-		float	C = len - edge.rest;
-		float	alpha = wsum * blobCompliance[edge.blob] / h2;
-		float	dl = (-C - alpha * myEdgeLambda[e]) / (wsum + alpha);
-		myEdgeLambda[e] += dl;
-		myX[edge.a] += n * (wa * dl);
-		myX[edge.b] -= n * (wb * dl);
+		const float rest = edge.restUnit * blobRadius[edge.blob];
+		float	alpha = wsum * blobCompliance[edge.blob];
+		float	dl = (-(len - rest) - alpha * lambda[e]) / (wsum + alpha);
+		lambda[e] += dl;
+
+		// Strain limit: soft edges may not stretch beyond MaxStretch, which keeps the gaps between
+		// particles small enough for other blobs not to slip through. The correction acts along d,
+		// so the corrected length is len + wsum * dl.
+		const float newLen = len + wsum * dl, maxLen = MaxStretch * rest;
+		if (newLen > maxLen)
+			dl -= (newLen - maxLen) / wsum;
+
+		const Vec3 c = d * (dl / len);
+		x[edge.a] += c * wa;
+		x[edge.b] -= c * wb;
 	}
 }
 
@@ -534,6 +874,7 @@ SoftBodySolver::solveVolumes(float h2, float compliance, float pressure)
 		if (wsum <= 1e-20f)
 			continue;
 
+		myBlobs[bi].volumeRatio = b.restVolume > 0.0f ? vol / (pressure * b.restVolume) : 1.0f;
 		float C = vol - pressure * b.restVolume;
 		float alpha = wsum * compliance / h2;
 		float dl = (-C - alpha * myVolumeLambda[bi]) / (wsum + alpha);
@@ -556,7 +897,7 @@ SoftBodySolver::solveShapeMatching(float k)
 
 		Mat3 A;
 		for (int32_t i = b.pointStart; i < b.pointStart + b.pointCount; ++i)
-			A.addOuter(myX[i] - cm, myRest[i], 1.0f);
+			A.addOuter(myX[i] - cm, myRestUnit[i], b.radius);
 
 		extractRotation(A, b.quat, 10);
 		Mat3 R;
@@ -564,7 +905,7 @@ SoftBodySolver::solveShapeMatching(float k)
 
 		for (int32_t i = b.pointStart; i < b.pointStart + b.pointCount; ++i)
 		{
-			Vec3 goal = cm + R * myRest[i];
+			Vec3 goal = cm + R * (myRestUnit[i] * b.radius);
 			myX[i] += (goal - myX[i]) * k;
 		}
 	}
@@ -573,10 +914,10 @@ SoftBodySolver::solveShapeMatching(float k)
 void
 SoftBodySolver::solveContacts(float friction)
 {
-	const float minDist = 2.0f * myParticleRadius;
 	for (const auto& pr : myPairs)
 	{
 		int32_t i = pr.first, j = pr.second;
+		const float minDist = myBlobRadius[myBlobOf[i]] + myBlobRadius[myBlobOf[j]];
 		Vec3	d = myX[i] - myX[j];
 		float	dist2 = length2(d);
 		if (dist2 >= minDist * minDist || dist2 < 1e-18f)
@@ -602,7 +943,7 @@ SoftBodySolver::solveContacts(float friction)
 void
 SoftBodySolver::solveContainer(const ContainerSDF& sdf, float friction)
 {
-	const float r = myParticleRadius;
+	const float r = myParticleRadius;	// the wall is a continuous surface, stretching doesn't matter here
 	for (uint32_t i : myNearWall)
 	{
 		Vec3	g;

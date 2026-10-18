@@ -1,12 +1,11 @@
 #include "Icosphere.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <utility>
+#include <tuple>
 
 namespace sb
 {
@@ -14,103 +13,133 @@ namespace sb
 namespace
 {
 
+const float		T = (1.0f + std::sqrt(5.0f)) * 0.5f;
+
+const float		IcoPoints[12][3] = {
+	{-1,  T,  0}, { 1,  T,  0}, {-1, -T,  0}, { 1, -T,  0},
+	{ 0, -1,  T}, { 0,  1,  T}, { 0, -1, -T}, { 0,  1, -T},
+	{ T,  0, -1}, { T,  0,  1}, {-T,  0, -1}, {-T,  0,  1}
+};
+
+const int32_t	IcoFaces[20][3] = {
+	{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
+	{1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+	{3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
+	{4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}
+};
+
 Icosphere
-makeIcosahedron()
+makeGeodesic(int n)
 {
 	Icosphere s;
-	const float t = (1.0f + std::sqrt(5.0f)) * 0.5f;
-	const float p[12][3] = {
-		{-1,  t,  0}, { 1,  t,  0}, {-1, -t,  0}, { 1, -t,  0},
-		{ 0, -1,  t}, { 0,  1,  t}, { 0, -1, -t}, { 0,  1, -t},
-		{ t,  0, -1}, { t,  0,  1}, {-t,  0, -1}, {-t,  0,  1}
-	};
-	for (const auto& v : p)
-		s.points.push_back(normalize(Vec3(v[0], v[1], v[2])));
 
-	const int32_t f[20][3] = {
-		{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
-		{1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
-		{3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
-		{4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}
-	};
-	for (const auto& tri : f)
-		s.triangles.insert(s.triangles.end(), { tri[0], tri[1], tri[2] });
-	return s;
-}
+	// Points on shared edges and corners must be created once. A point of face (A, B, C) at grid
+	// position (i, j) is A + (B - A) i/n + (C - A) j/n; identify it exactly by its barycentric weights
+	// on the icosahedron corners, sorted by corner index.
+	using Key = std::tuple<int32_t, int32_t, int32_t, int32_t, int32_t, int32_t>;
+	std::map<Key, int32_t> lookup;
 
-Icosphere
-subdivide(const Icosphere& in)
-{
-	Icosphere out;
-	out.points = in.points;
-	std::map<std::pair<int32_t, int32_t>, int32_t> midpoints;
-
-	auto mid = [&](int32_t a, int32_t b) -> int32_t
+	auto pointIndex = [&](const int32_t corner[3], int i, int j) -> int32_t
 	{
-		auto key = std::make_pair(std::min(a, b), std::max(a, b));
-		auto it = midpoints.find(key);
-		if (it != midpoints.end())
+		int w[3] = { n - i - j, i, j };
+		std::pair<int32_t, int32_t> cw[3] = {
+			{ corner[0], w[0] }, { corner[1], w[1] }, { corner[2], w[2] }
+		};
+		std::sort(std::begin(cw), std::end(cw));
+		// Drop zero weights so a point on an edge or corner gets the same key from every face.
+		int32_t k[6] = { -1, 0, -1, 0, -1, 0 };
+		int m = 0;
+		for (const auto& c : cw)
+		{
+			if (c.second == 0)
+				continue;
+			k[2 * m] = c.first;
+			k[2 * m + 1] = c.second;
+			++m;
+		}
+		Key key{ k[0], k[1], k[2], k[3], k[4], k[5] };
+		auto it = lookup.find(key);
+		if (it != lookup.end())
 			return it->second;
-		int32_t idx = static_cast<int32_t>(out.points.size());
-		out.points.push_back(normalize(out.points[a] + out.points[b]));
-		midpoints[key] = idx;
+
+		Vec3 p;
+		for (int c = 0; c < 3; ++c)
+		{
+			const float* q = IcoPoints[corner[c]];
+			p += Vec3(q[0], q[1], q[2]) * static_cast<float>(w[c]);
+		}
+		int32_t idx = static_cast<int32_t>(s.points.size());
+		s.points.push_back(normalize(p));
+		lookup[key] = idx;
 		return idx;
 	};
 
-	for (size_t i = 0; i < in.triangles.size(); i += 3)
+	for (const auto& face : IcoFaces)
 	{
-		int32_t a = in.triangles[i], b = in.triangles[i + 1], c = in.triangles[i + 2];
-		int32_t ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
-		out.triangles.insert(out.triangles.end(), { a, ab, ca });
-		out.triangles.insert(out.triangles.end(), { b, bc, ab });
-		out.triangles.insert(out.triangles.end(), { c, ca, bc });
-		out.triangles.insert(out.triangles.end(), { ab, bc, ca });
+		for (int j = 0; j < n; ++j)
+		{
+			for (int i = 0; i + j < n; ++i)
+			{
+				int32_t a = pointIndex(face, i, j);
+				int32_t b = pointIndex(face, i + 1, j);
+				int32_t c = pointIndex(face, i, j + 1);
+				s.triangles.insert(s.triangles.end(), { a, b, c });
+				if (i + j + 1 < n)
+				{
+					int32_t d = pointIndex(face, i + 1, j + 1);
+					s.triangles.insert(s.triangles.end(), { b, d, c });
+				}
+			}
+		}
 	}
-	return out;
+	return s;
 }
-
-constexpr int MaxLevel = 7;
 
 }
 
 const Icosphere&
-getUnitIcosphere(int level)
+getUnitGeodesicSphere(int frequency)
 {
-	static std::array<std::unique_ptr<Icosphere>, MaxLevel + 1> cache;
+	static std::map<int, std::unique_ptr<Icosphere>> cache;
 	static std::mutex lock;
 
-	level = std::clamp(level, 0, MaxLevel);
+	frequency = std::clamp(frequency, 1, MaxGeodesicFrequency);
 	std::lock_guard<std::mutex> guard(lock);
-	if (!cache[level])
-	{
-		if (level == 0)
-			cache[0] = std::make_unique<Icosphere>(makeIcosahedron());
-		else
-		{
-			// Build the chain up to this level.
-			for (int l = 0; l <= level; ++l)
-			{
-				if (cache[l])
-					continue;
-				cache[l] = std::make_unique<Icosphere>(l == 0 ? makeIcosahedron() : subdivide(*cache[l - 1]));
-			}
-		}
-	}
-	return *cache[level];
+	std::unique_ptr<Icosphere>& entry = cache[frequency];
+	if (!entry)
+		entry = std::make_unique<Icosphere>(makeGeodesic(frequency));
+	return *entry;
 }
 
 int
-icosphereLevelFor(float radius, float targetEdge, int minLevel, int maxLevel)
+geodesicFrequencyAtLeast(int points)
 {
-	minLevel = std::clamp(minLevel, 0, MaxLevel);
-	maxLevel = std::clamp(maxLevel, minLevel, MaxLevel);
-	if (targetEdge <= 0.0f || radius <= 0.0f)
-		return minLevel;
+	int f = 1;
+	while (f < MaxGeodesicFrequency && geodesicPointCount(f) < points)
+		++f;
+	return f;
+}
 
-	// Each subdivision halves the edge length.
-	float	ratio = IcosahedronEdge * radius / targetEdge;
-	int		level = ratio <= 1.0f ? 0 : static_cast<int>(std::ceil(std::log2(ratio)));
-	return std::clamp(level, minLevel, maxLevel);
+int
+geodesicFrequencyAtMost(int points)
+{
+	int f = 1;
+	while (f < MaxGeodesicFrequency && geodesicPointCount(f + 1) <= points)
+		++f;
+	return f;
+}
+
+int
+geodesicFrequencyFor(float radius, float targetEdge, int minFrequency, int maxFrequency)
+{
+	minFrequency = std::clamp(minFrequency, 1, MaxGeodesicFrequency);
+	maxFrequency = std::clamp(maxFrequency, minFrequency, MaxGeodesicFrequency);
+	if (targetEdge <= 0.0f || radius <= 0.0f)
+		return minFrequency;
+
+	// Splitting each icosahedron edge into n parts gives edges of about IcosahedronEdge * r / n.
+	int f = static_cast<int>(std::ceil(IcosahedronEdge * radius / targetEdge - 1e-4f));
+	return std::clamp(f, minFrequency, maxFrequency);
 }
 
 }

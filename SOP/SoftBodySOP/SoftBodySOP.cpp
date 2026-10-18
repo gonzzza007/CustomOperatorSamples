@@ -199,12 +199,11 @@ SoftBodySOP::execute(SOP_Output* output, const OP_Inputs* inputs, void*)
 	// Regenerate blobs when seeds or generation parameters change, or on Reset.
 	const sb::GenerationSettings gen = Parameters::evalGenerationSettings(inputs);
 	Hasher genHash;
-	genHash.value(gen.radiusMin);
-	genHash.value(gen.radiusMax);
+	// Radius range and seed are not part of the hash: they only change the target radii,
+	// and the blobs grow or shrink towards them without a reset.
 	genHash.value(gen.edgeLength);
-	genHash.value(gen.minLevel);
-	genHash.value(gen.maxLevel);
-	genHash.value(gen.seed);
+	genHash.value(gen.minPoints);
+	genHash.value(gen.maxPoints);
 	genHash.value(gen.massMode);
 	genHash.value(gen.mass);
 	genHash.value(gen.collisionRadius);
@@ -217,7 +216,10 @@ SoftBodySOP::execute(SOP_Output* output, const OP_Inputs* inputs, void*)
 		myGenHash = genHash.h;
 		myResetRequested = false;
 	}
-	else if (Parameters::evalSimulate(inputs))
+	else
+		mySolver.setTargetRadii(gen.radiusMin, gen.radiusMax, gen.seed);
+
+	if (Parameters::evalSimulate(inputs))
 	{
 		const OP_TimeInfo* time = inputs->getTimeInfo();
 		float dt = (time && time->rate > 0.0) ? static_cast<float>(time->deltaFrames / time->rate) : 0.0f;
@@ -229,14 +231,12 @@ SoftBodySOP::execute(SOP_Output* output, const OP_Inputs* inputs, void*)
 		}
 	}
 
-	if (myLastReport.seedsOutside > 0 || myLastReport.seedsTooTight > 0)
-	{
-		myWarningString = std::to_string(myLastReport.seedsOutside) + " seed(s) outside the container, " +
-			std::to_string(myLastReport.seedsTooTight) + " seed(s) without room for a blob were skipped.";
-	}
+	if (myLastReport.seedsOutside > 0)
+		myWarningString = std::to_string(myLastReport.seedsOutside) + " seed(s) outside the container were skipped.";
 	if (mySolver.isEmpty())
 		myWarningString = "No blobs: check that the seed points are inside the container.";
 
+	myOffsetSurface = Parameters::evalSurfaceoffset(inputs);
 	writeOutput(output);
 }
 
@@ -248,20 +248,38 @@ SoftBodySOP::writeOutput(SOP_Output* output)
 		return;
 	const int32_t numPoints = static_cast<int32_t>(x.size());
 
-	// sb::Vec3 and TD::Position/Vector are all three packed floats, but copy to stay safe.
+	mySolver.computeNormals(myNormals);
+
+	// The particles are spheres of the collision radius, so the blobs actually touch that far outside
+	// the simulated points. With Surface Offset the drawn surface is pushed out to there, so touching
+	// blobs look touching instead of leaving a gap of twice the collision radius.
 	std::vector<Position> pos(x.size());
 	for (size_t i = 0; i < x.size(); ++i)
-		pos[i] = Position(x[i].x, x[i].y, x[i].z);
+	{
+		sb::Vec3 p = x[i];
+		if (myOffsetSurface)
+			p += myNormals[i] * mySolver.pointCollisionRadius(i);
+		pos[i] = Position(p.x, p.y, p.z);
+	}
 	output->addPoints(pos.data(), numPoints);
 
-	mySolver.computeNormals(myNormals);
 	std::vector<Vector> normals(myNormals.size());
 	for (size_t i = 0; i < myNormals.size(); ++i)
 		normals[i] = Vector(myNormals[i].x, myNormals[i].y, myNormals[i].z);
 	output->setNormals(normals.data(), numPoints, 0);
 
+	// The solver's triangles wind counter-clockwise seen from outside (the volume constraint relies
+	// on that), but TouchDesigner treats clockwise as the front face. Emit them reversed so the
+	// faces point outward and agree with the normals set above.
 	const std::vector<int32_t>& tris = mySolver.triangles();
-	output->addTriangles(tris.data(), static_cast<int32_t>(tris.size() / 3));
+	myOutTriangles.resize(tris.size());
+	for (size_t t = 0; t + 2 < tris.size(); t += 3)
+	{
+		myOutTriangles[t] = tris[t];
+		myOutTriangles[t + 1] = tris[t + 2];
+		myOutTriangles[t + 2] = tris[t + 1];
+	}
+	output->addTriangles(myOutTriangles.data(), static_cast<int32_t>(myOutTriangles.size() / 3));
 
 	const std::vector<int32_t>& ids = mySolver.pointBlobIds();
 	SOP_CustomAttribData blobId("blobid", 1, AttribType::Int);
@@ -291,14 +309,15 @@ SoftBodySOP::pulsePressed(const char* name, void*)
 int32_t
 SoftBodySOP::getNumInfoCHOPChans(void*)
 {
-	return 8;
+	return 10;
 }
 
 void
 SoftBodySOP::getInfoCHOPChan(int32_t index, OP_InfoCHOPChan* chan, void*)
 {
-	static const std::array<const char*, 8> names = {
-		"blobs", "particles", "contacts", "seeds_outside", "seeds_too_tight", "step_ms", "container_ms", "volume_ratio"
+	static const std::array<const char*, 10> names = {
+		"blobs", "particles", "contacts", "seeds_outside", "started_small", "step_ms", "container_ms", "volume_ratio", "grow_ratio",
+		"target_scale"
 	};
 	if (index < 0 || index >= static_cast<int32_t>(names.size()))
 		return;
@@ -309,10 +328,12 @@ SoftBodySOP::getInfoCHOPChan(int32_t index, OP_InfoCHOPChan* chan, void*)
 		case 1: chan->value = static_cast<float>(mySolver.numParticles()); break;
 		case 2: chan->value = static_cast<float>(mySolver.numContacts()); break;
 		case 3: chan->value = static_cast<float>(myLastReport.seedsOutside); break;
-		case 4: chan->value = static_cast<float>(myLastReport.seedsTooTight); break;
+		case 4: chan->value = static_cast<float>(myLastReport.blobsStartedSmall); break;
 		case 5: chan->value = myStepMs; break;
 		case 6: chan->value = mySdfMs; break;
 		case 7: chan->value = mySolver.currentVolumeRatio(); break;
+		case 8: chan->value = mySolver.growRatio(); break;
+		case 9: chan->value = mySolver.targetScale(); break;
 		default: break;
 	}
 }

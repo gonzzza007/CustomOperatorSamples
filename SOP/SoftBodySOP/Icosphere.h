@@ -1,5 +1,7 @@
-// Unit icosphere generator. Level 0 is an icosahedron (12 points, 20 triangles);
-// every level splits each triangle into 4, so points grow roughly 4x per level.
+// Unit geodesic sphere generator (class I geodesic polyhedron).
+// Each face of an icosahedron is split into frequency^2 triangles and projected onto the sphere,
+// giving 10 * frequency^2 + 2 points. Any integer frequency works, so the point count can follow
+// the blob size closely: 12, 42, 92, 162, 252, 362, 492, 642, 812, 1002, ... points.
 
 #pragma once
 
@@ -16,13 +18,23 @@ struct Icosphere
 	std::vector<int32_t>	triangles;	// 3 indices per triangle, counter-clockwise seen from outside
 };
 
-// Returns a cached unit icosphere of the given level (clamped to [0, 7]).
-const Icosphere&	getUnitIcosphere(int level);
+constexpr int		MaxGeodesicFrequency = 64;
 
-// Edge length of a unit icosphere at level 0 (icosahedron inscribed in a unit sphere).
+// Returns a cached unit geodesic sphere of the given frequency (clamped to [1, MaxGeodesicFrequency]).
+const Icosphere&	getUnitGeodesicSphere(int frequency);
+
+// Number of points of a geodesic sphere of the given frequency.
+inline int			geodesicPointCount(int frequency) { return 10 * frequency * frequency + 2; }
+
+// Smallest frequency whose point count is >= points (and largest one whose count is <= points).
+int					geodesicFrequencyAtLeast(int points);
+int					geodesicFrequencyAtMost(int points);
+
+// Edge length of a unit icosahedron (frequency 1).
 constexpr float		IcosahedronEdge = 1.0514622f;
 
-// Picks the smallest level whose edges are no longer than targetEdge for a sphere of the given radius.
-int					icosphereLevelFor(float radius, float targetEdge, int minLevel, int maxLevel);
+// Picks the smallest frequency whose edges are no longer than targetEdge for a sphere of the given
+// radius, clamped to [minFrequency, maxFrequency].
+int					geodesicFrequencyFor(float radius, float targetEdge, int minFrequency, int maxFrequency);
 
 }

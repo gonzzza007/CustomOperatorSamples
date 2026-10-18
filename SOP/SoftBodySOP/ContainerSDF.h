@@ -31,6 +31,7 @@ public:
 	float		distanceAndGradient(const Vec3& p, Vec3& gradient) const;
 
 	float		cellSize() const { return myDx; }
+	float		insideVolume() const { return myInsideVolume; }
 	Vec3		boundsMin() const { return myOrigin; }
 	Vec3		boundsMax() const;
 
@@ -40,6 +41,7 @@ private:
 	std::vector<float>	myPhi;
 	Vec3				myOrigin;
 	float				myDx = 0.0f;
+	float				myInsideVolume = 0.0f;
 	int					myNx = 0, myNy = 0, myNz = 0;
 };
 

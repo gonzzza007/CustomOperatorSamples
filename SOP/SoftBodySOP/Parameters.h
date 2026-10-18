@@ -36,11 +36,20 @@ constexpr static char ResetLabel[] = "Reset";
 constexpr static char StiffnessName[] = "Stiffness";
 constexpr static char StiffnessLabel[] = "Stiffness";
 
+constexpr static char BendingName[] = "Bending";
+constexpr static char BendingLabel[] = "Bending";
+
 constexpr static char VolumestiffnessName[] = "Volumestiffness";
 constexpr static char VolumestiffnessLabel[] = "Volume Stiffness";
 
 constexpr static char PressureName[] = "Pressure";
 constexpr static char PressureLabel[] = "Pressure";
+
+constexpr static char FillName[] = "Fill";
+constexpr static char FillLabel[] = "Fill";
+
+constexpr static char GrowspeedName[] = "Growspeed";
+constexpr static char GrowspeedLabel[] = "Grow Speed";
 
 constexpr static char ShapememoryName[] = "Shapememory";
 constexpr static char ShapememoryLabel[] = "Shape Memory";
@@ -76,11 +85,11 @@ constexpr static char SeedLabel[] = "Seed";
 constexpr static char EdgelengthName[] = "Edgelength";
 constexpr static char EdgelengthLabel[] = "Edge Length";
 
-constexpr static char MinlevelName[] = "Minlevel";
-constexpr static char MinlevelLabel[] = "Min Level";
+constexpr static char MinpointsName[] = "Minpoints";
+constexpr static char MinpointsLabel[] = "Min Points";
 
-constexpr static char MaxlevelName[] = "Maxlevel";
-constexpr static char MaxlevelLabel[] = "Max Level";
+constexpr static char MaxpointsName[] = "Maxpoints";
+constexpr static char MaxpointsLabel[] = "Max Points";
 
 constexpr static char MassmodeName[] = "Massmode";
 constexpr static char MassmodeLabel[] = "Mass Mode";
@@ -90,6 +99,9 @@ constexpr static char MassLabel[] = "Mass";
 
 constexpr static char CollisionradiusName[] = "Collisionradius";
 constexpr static char CollisionradiusLabel[] = "Collision Radius";
+
+constexpr static char SurfaceoffsetName[] = "Surfaceoffset";
+constexpr static char SurfaceoffsetLabel[] = "Surface Offset";
 
 constexpr static char SdfresolutionName[] = "Sdfresolution";
 constexpr static char SdfresolutionLabel[] = "Container Resolution";
@@ -114,6 +126,7 @@ public:
 	static void		setup(TD::OP_ParameterManager*);
 
 	static bool		evalSimulate(const TD::OP_Inputs* inputs);
+	static bool		evalSurfaceoffset(const TD::OP_Inputs* inputs);
 
 	// Parameters that may change every frame.
 	static sb::SimSettings			evalSimSettings(const TD::OP_Inputs* inputs);

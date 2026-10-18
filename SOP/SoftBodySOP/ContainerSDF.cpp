@@ -48,6 +48,7 @@ ContainerSDF::clear()
 	myPhi.clear();
 	myNx = myNy = myNz = 0;
 	myDx = 0.0f;
+	myInsideVolume = 0.0f;
 }
 
 bool
@@ -223,6 +224,10 @@ ContainerSDF::build(const std::vector<Vec3>& pts, const std::vector<int32_t>& tr
 			}
 		}
 
+	size_t inside = 0;
+	for (float v : myPhi)
+		inside += v < 0.0f ? 1 : 0;
+	myInsideVolume = static_cast<float>(inside) * myDx * myDx * myDx;
 	return true;
 }
 

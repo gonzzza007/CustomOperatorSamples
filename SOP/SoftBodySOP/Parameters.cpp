@@ -75,13 +75,22 @@ Parameters::evalSimulate(const TD::OP_Inputs* inputs)
 	return inputs->getParInt(SimulateName) != 0;
 }
 
+bool
+Parameters::evalSurfaceoffset(const TD::OP_Inputs* inputs)
+{
+	return inputs->getParInt(SurfaceoffsetName) != 0;
+}
+
 sb::SimSettings
 Parameters::evalSimSettings(const TD::OP_Inputs* inputs)
 {
 	sb::SimSettings s;
 	s.stiffness = static_cast<float>(inputs->getParDouble(StiffnessName));
+	s.bending = static_cast<float>(inputs->getParDouble(BendingName));
 	s.volumeStiffness = static_cast<float>(inputs->getParDouble(VolumestiffnessName));
 	s.pressure = static_cast<float>(inputs->getParDouble(PressureName));
+	s.growSpeed = static_cast<float>(inputs->getParDouble(GrowspeedName));
+	s.fill = static_cast<float>(inputs->getParDouble(FillName));
 	s.shapeMemory = static_cast<float>(inputs->getParDouble(ShapememoryName));
 	s.damping = static_cast<float>(inputs->getParDouble(DampingName));
 	s.friction = static_cast<float>(inputs->getParDouble(FrictionName));
@@ -104,8 +113,10 @@ Parameters::evalGenerationSettings(const TD::OP_Inputs* inputs)
 	g.radiusMax = static_cast<float>(inputs->getParDouble(RadiusmaxName));
 	g.seed = static_cast<uint32_t>(inputs->getParInt(SeedName));
 	g.edgeLength = static_cast<float>(inputs->getParDouble(EdgelengthName));
-	g.minLevel = inputs->getParInt(MinlevelName);
-	g.maxLevel = inputs->getParInt(MaxlevelName);
+	g.minPoints = inputs->getParInt(MinpointsName);
+	g.maxPoints = inputs->getParInt(MaxpointsName);
+	g.fill = static_cast<float>(inputs->getParDouble(FillName));
+	g.pressure = static_cast<float>(inputs->getParDouble(PressureName));
 
 	const char* mode = inputs->getParString(MassmodeName);
 	g.massMode = (mode && std::strcmp(mode, "Perblob") == 0) ? sb::MassMode::PerBlob : sb::MassMode::Density;
@@ -152,8 +163,11 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 	}
 
 	appendFloat(manager, StiffnessName, StiffnessLabel, sim, 0.5, 0.0, 1.0, true, 0.0, true, 1.0);
+	appendFloat(manager, BendingName, BendingLabel, sim, 0.5, 0.0, 1.0, true, 0.0, true, 1.0);
 	appendFloat(manager, VolumestiffnessName, VolumestiffnessLabel, sim, 0.9, 0.0, 1.0, true, 0.0, true, 1.0);
 	appendFloat(manager, PressureName, PressureLabel, sim, 1.0, 0.2, 2.0, true, 0.01);
+	appendFloat(manager, FillName, FillLabel, sim, 0.85, 0.1, 0.99, true, 0.01, true, 0.99);
+	appendFloat(manager, GrowspeedName, GrowspeedLabel, sim, 2.0, 0.0, 10.0, true, 0.0);
 	appendFloat(manager, ShapememoryName, ShapememoryLabel, sim, 0.0, 0.0, 1.0, true, 0.0, true, 1.0);
 	appendFloat(manager, DampingName, DampingLabel, sim, 0.5, 0.0, 5.0, true, 0.0);
 	appendFloat(manager, FrictionName, FrictionLabel, sim, 0.3, 0.0, 1.0, true, 0.0, true, 1.0);
@@ -180,12 +194,13 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 	appendInt(manager, IterationsName, IterationsLabel, sim, 8, 1, 30, 1, 100);
 
 	// --- Blobs page (changes regenerate the blobs) ---
-	appendFloat(manager, RadiusminName, RadiusminLabel, blobs, 0.06, 0.005, 0.5, true, 0.001);
-	appendFloat(manager, RadiusmaxName, RadiusmaxLabel, blobs, 0.12, 0.005, 0.5, true, 0.001);
+	// Sliders go to 100; typed values above that are accepted (no upper clamp).
+	appendFloat(manager, RadiusminName, RadiusminLabel, blobs, 0.06, 0.0, 100.0, true, 0.001);
+	appendFloat(manager, RadiusmaxName, RadiusmaxLabel, blobs, 0.12, 0.0, 100.0, true, 0.001);
 	appendInt(manager, SeedName, SeedLabel, blobs, 1, 0, 100, 0, 1 << 30);
 	appendFloat(manager, EdgelengthName, EdgelengthLabel, blobs, 0.025, 0.005, 0.1, true, 0.001);
-	appendInt(manager, MinlevelName, MinlevelLabel, blobs, 1, 0, 7, 0, 7);
-	appendInt(manager, MaxlevelName, MaxlevelLabel, blobs, 4, 0, 7, 0, 7);
+	appendInt(manager, MinpointsName, MinpointsLabel, blobs, 42, 12, 2562, 12, 40962);
+	appendInt(manager, MaxpointsName, MaxpointsLabel, blobs, 2562, 12, 10242, 12, 40962);
 
 	{
 		TD::OP_StringParameter p;
@@ -202,6 +217,16 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 
 	appendFloat(manager, MassName, MassLabel, blobs, 1000.0, 1.0, 5000.0, true, 0.0001);
 	appendFloat(manager, CollisionradiusName, CollisionradiusLabel, blobs, 0.0, 0.0, 0.05, true, 0.0);
+	{
+		TD::OP_NumericParameter p;
+		p.name = SurfaceoffsetName;
+		p.label = SurfaceoffsetLabel;
+		p.page = blobs;
+		p.defaultValues[0] = 1.0;
+		TD::OP_ParAppendResult res = manager->appendToggle(p);
+		assert(res == TD::OP_ParAppendResult::Success);
+		(void)res;
+	}
 	appendInt(manager, SdfresolutionName, SdfresolutionLabel, blobs, 64, 16, 256, 8, 512);
 }
 

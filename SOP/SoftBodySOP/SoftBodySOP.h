@@ -67,11 +67,13 @@ private:
 	std::vector<sb::Vec3>			mySeeds;
 	std::vector<sb::SeedOverrides>	myOverrides;
 	std::vector<sb::Vec3>			myNormals;
+	std::vector<int32_t>			myOutTriangles;	// solver triangles with TD's (clockwise) winding
 
 	uint64_t		myContainerHash = 0;
 	uint64_t		mySeedHash = 0;
 	uint64_t		myGenHash = 0;
 	bool			myResetRequested = true;
+	bool			myOffsetSurface = true;
 
 	// Info CHOP
 	float			myStepMs = 0.0f;
