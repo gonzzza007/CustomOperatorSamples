@@ -36,7 +36,6 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
-#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 
@@ -59,6 +58,12 @@ constexpr double theSewingTolerance = 1e-6;
 // Tolerances for merging coplanar faces
 constexpr double theUnifyLinearTolerance = 1e-5;
 constexpr double theUnifyAngularTolerance = 1e-4;	// radians
+
+// Plane Cut: faces meeting at a smaller angle (radians) count as one flat surface
+constexpr double theFlatAngle = 0.5 * 3.14159265358979323846 / 180.0;
+
+// Plane Cut: bevels fade in over this angle (radians) above the Min Edge Angle
+constexpr double theAngleFade = 5.0 * 3.14159265358979323846 / 180.0;
 
 constexpr char theInvalidInput[] = "invalid input geometry";
 
@@ -294,8 +299,11 @@ planeNormal(const TopoDS_Face& face, gp_Dir& normal)
 
 // Edges shared by two faces meeting at an angle of at least minAngle (radians).
 // Edges on curved (non planar) faces are always included.
+// forward declaration (defined below)
+static double edgeLength(const TopoDS_Edge& edge);
+
 std::vector<TopoDS_Edge>
-sharpEdges(const TopoDS_Shape& part, double minAngle)
+sharpEdges(const TopoDS_Shape& part, double minAngle, double minEdgeLen = 0.0)
 {
 	TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
 	TopExp::MapShapesAndAncestors(part, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
@@ -307,6 +315,11 @@ sharpEdges(const TopoDS_Shape& part, double minAngle)
 
 		// border edges of open shells can't be filleted
 		if (faces.Extent() != 2 || BRep_Tool::Degenerated(edge))
+			continue;
+
+		// skip degenerate micro-edges that would make BRepCheck_Analyzer fail
+		// and cause the chamfer to be skipped for the whole part
+		if (minEdgeLen > 0.0 && edgeLength(edge) < minEdgeLen)
 			continue;
 
 		gp_Dir n1, n2;
@@ -330,28 +343,12 @@ edgeLength(const TopoDS_Edge& edge)
 	}
 }
 
-// Applies the modifier to all sharp edges of the part.
-// Returns false (and leaves the part untouched) if OpenCascade fails.
-// shortestEdge receives the length of the shortest modified edge: a fillet or
-// chamfer fails once the radius / distance reaches half of it, because the
-// modified strips on both ends of that edge would overlap.
+// Builds the modifier on the given edges of the part into result.
+// Returns false (and leaves result untouched) if OpenCascade fails.
 bool
-applyModifier(ModifierMenuItems modifier, double radius, double minAngle,
-	TopoDS_Shape& part, std::string& failure, double& shortestEdge)
+buildModifier(ModifierMenuItems modifier, double radius, const TopoDS_Shape& part,
+	const std::vector<TopoDS_Edge>& edges, TopoDS_Shape& result, std::string& failure)
 {
-	const std::vector<TopoDS_Edge> edges = sharpEdges(part, minAngle);
-	shortestEdge = std::numeric_limits<double>::infinity();
-	if (edges.empty())
-		return true;
-	for (const TopoDS_Edge& edge : edges)
-		shortestEdge = std::min(shortestEdge, edgeLength(edge));
-
-	// the fillet algorithms don't check their input and can crash on broken shapes
-	if (!BRepCheck_Analyzer(part).IsValid()) {
-		failure = theInvalidInput;
-		return false;
-	}
-
 	try {
 		if (modifier == ModifierMenuItems::Fillet) {
 			BRepFilletAPI_MakeFillet fillet(part);
@@ -366,7 +363,7 @@ applyModifier(ModifierMenuItems modifier, double radius, double minAngle,
 				failure = "fillet produced invalid geometry";
 				return false;
 			}
-			part = fillet.Shape();
+			result = fillet.Shape();
 		} else {
 			BRepFilletAPI_MakeChamfer chamfer(part);
 			for (const TopoDS_Edge& edge : edges)
@@ -380,7 +377,7 @@ applyModifier(ModifierMenuItems modifier, double radius, double minAngle,
 				failure = "chamfer produced invalid geometry";
 				return false;
 			}
-			part = chamfer.Shape();
+			result = chamfer.Shape();
 		}
 	} catch (const Standard_Failure& e) {
 		failure = e.GetMessageString();
@@ -392,260 +389,570 @@ applyModifier(ModifierMenuItems modifier, double radius, double minAngle,
 	return true;
 }
 
+// Applies the modifier to all sharp edges of the part.
+// Returns false (and leaves the part untouched) if OpenCascade fails.
+// shortestEdge receives the length of the shortest modified edge: a fillet or
+// chamfer fails once the radius / distance reaches half of it, because the
+// modified strips on both ends of that edge would overlap.
+bool
+applyModifier(ModifierMenuItems modifier, double radius, double minAngle,
+	TopoDS_Shape& part, std::string& failure, double& shortestEdge)
+{
+	// minEdgeLen: skip edges shorter than 2*radius — they would fail the chamfer
+	// anyway, and degenerate slivers (e.g. from SoftBody meshing) that are far
+	// shorter cause BRepCheck_Analyzer to reject the whole part.
+	const double minEdgeLen = 2.0 * radius * (1.0 - 1e-6);
+	std::vector<TopoDS_Edge> edges = sharpEdges(part, minAngle, minEdgeLen);
+	shortestEdge = std::numeric_limits<double>::infinity();
+	if (edges.empty())
+		return true;
+	for (const TopoDS_Edge& edge : edges)
+		shortestEdge = std::min(shortestEdge, edgeLength(edge));
+
+	// the fillet algorithms don't check their input and can crash on broken shapes
+	// Run ShapeFix first: SoftBody geometry has float-precision noise that makes
+	// BRepCheck_Analyzer reject otherwise-valid shapes, skipping the chamfer entirely.
+	{
+		ShapeFix_Shape fix(part);
+		fix.Perform();
+		part = fix.Shape();
+	}
+	if (!BRepCheck_Analyzer(part).IsValid()) {
+		failure = theInvalidInput;
+		return false;
+	}
+
+	TopoDS_Shape result;
+	if (!buildModifier(modifier, radius, part, edges, result, failure))
+		return false;
+	part = result;
+	return true;
+}
+
 // ---------------------------------------------------------------------------
-// Plane cut chamfer for convex parts.
-// A chamfer of a convex solid is the intersection of the solid with one extra
-// half-space per edge: the bevel plane, tilted halfway between the two faces
-// and set back so it cuts the given distance into both faces. Unlike
-// BRepFilletAPI_MakeChamfer this never fails: faces that are cut away completely
-// just disappear, so thin parts get bevels that meet in a ridge or a point.
+// Plane cut chamfer.
+// Every convex edge gets one bevel plane, tilted halfway between its two faces.
+// Concave edges and edges under the Min Edge Angle stay untouched.
+//
+// The result must change continuously with the distance, so:
+// - Every edge stops by itself at its limit: half the width of its faces, and
+//   halfway from the edge to the center of the part. Past the limit the shape
+//   no longer changes, and a convex part can't be cut away.
+// - The cut works on one welded triangle mesh. Every point is classified once
+//   and neighbouring triangles share the new points, so the mesh stays closed.
+//   No solid is rebuilt, so there is no validity check that can reject a result.
+// - A plane removes only the piece above it that is nearest to its edge, and the
+//   points of concave edges can't be removed. A bevel that reaches a concave
+//   edge narrows to its end point instead of cutting into the next region.
+
+struct CutMesh
+{
+	std::vector<gp_XYZ>					points;
+	std::vector<std::array<int32_t, 3>>	triangles;		// counter-clockwise from outside
+	std::vector<int32_t>				triangleFaces;	// face of every triangle
+	std::vector<gp_XYZ>					faceNormals;	// outward
+	std::vector<char>					locked;			// points on concave edges, the new points are never locked
+};
 
 // keeps the side n.x <= c
-struct CutPlane
+struct Bevel
 {
 	gp_XYZ	n;
 	double	c;
+	gp_XYZ	a, b;		// the edge
+	double	distance;	// after the limits of the edge
 };
 
-// Convex polyhedron as a list of convex polygons, each counter-clockwise
-// around its outward normal
-using CutPolygon = std::vector<gp_XYZ>;
-
-std::vector<CutPolygon>
-makeCutBox(const gp_XYZ& lo, const gp_XYZ& hi)
+// Triangulates the solid and welds the points of its faces.
+// Returns false if a face has no triangles or is not planar.
+bool
+buildCutMesh(const TopoDS_Shape& solid, double deflection, double angularDeflection, CutMesh& mesh, double& size)
 {
-	auto corner = [&](int i) {
-		return gp_XYZ((i & 1) ? hi.X() : lo.X(), (i & 2) ? hi.Y() : lo.Y(), (i & 4) ? hi.Z() : lo.Z());
-	};
-	static const int faces[6][4] = {
-		{ 0, 4, 6, 2 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 6, 7, 3 }, { 0, 2, 3, 1 }, { 4, 5, 7, 6 }
-	};
-	std::vector<CutPolygon> polys;
-	for (const auto& f : faces)
-		polys.push_back({ corner(f[0]), corner(f[1]), corner(f[2]), corner(f[3]) });
-	return polys;
-}
+	BRepMesh_IncrementalMesh mesher(solid, deflection, Standard_False, angularDeflection, Standard_True);
 
-// Clips the polyhedron with a half-space and closes the hole with a cap polygon
-void
-clipPolyhedron(std::vector<CutPolygon>& polys, const CutPlane& plane, double eps)
-{
-	bool cut = false;
-	for (const CutPolygon& poly : polys) {
-		for (const gp_XYZ& p : poly)
-			cut = cut || plane.n.Dot(p) - plane.c > eps;
+	struct RawFace
+	{
+		Handle(Poly_Triangulation)	tri;
+		gp_Trsf						trsf;
+		bool						reversed;
+	};
+	std::vector<RawFace> faces;
+	gp_XYZ lo(1e300, 1e300, 1e300), hi(-1e300, -1e300, -1e300);
+	for (TopExp_Explorer e(solid, TopAbs_FACE); e.More(); e.Next()) {
+		const TopoDS_Face& face = TopoDS::Face(e.Current());
+		gp_Dir normal;
+		TopLoc_Location loc;
+		Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+		if (tri.IsNull() || !planeNormal(face, normal))
+			return false;
+		faces.push_back({ tri, loc.Transformation(), face.Orientation() == TopAbs_REVERSED });
+		mesh.faceNormals.push_back(normal.XYZ());
+		for (int n = 1; n <= tri->NbNodes(); n++) {
+			const gp_XYZ p = tri->Node(n).Transformed(faces.back().trsf).XYZ();
+			lo.SetCoord(std::min(lo.X(), p.X()), std::min(lo.Y(), p.Y()), std::min(lo.Z(), p.Z()));
+			hi.SetCoord(std::max(hi.X(), p.X()), std::max(hi.Y(), p.Y()), std::max(hi.Z(), p.Z()));
+		}
 	}
-	if (!cut)
-		return;
+	if (faces.empty())
+		return false;
+	size = (hi - lo).Modulus();
 
-	std::vector<CutPolygon> out;
-	std::vector<gp_XYZ> capPoints;
-	for (const CutPolygon& poly : polys) {
-		CutPolygon clipped;
-		for (size_t i = 0; i < poly.size(); i++) {
-			const gp_XYZ& a = poly[i];
-			const gp_XYZ& b = poly[(i + 1) % poly.size()];
-			const double da = plane.n.Dot(a) - plane.c;
-			const double db = plane.n.Dot(b) - plane.c;
-			if (da <= eps) {
-				clipped.push_back(a);
-				if (da >= -eps)
-					capPoints.push_back(a);
-			}
-			if ((da < -eps && db > eps) || (da > eps && db < -eps)) {
-				const gp_XYZ p = a + (b - a) * (da / (da - db));
-				clipped.push_back(p);
-				capPoints.push_back(p);
+	// weld the points by position with a grid of cells the size of the tolerance
+	const double tol = std::max(10.0 * theSewingTolerance, 1e-7 * size);
+	std::map<std::array<int64_t, 3>, std::vector<int32_t>> grid;
+	auto weld = [&](const gp_XYZ& p) {
+		const std::array<int64_t, 3> cell = {
+			static_cast<int64_t>(std::floor(p.X() / tol)),
+			static_cast<int64_t>(std::floor(p.Y() / tol)),
+			static_cast<int64_t>(std::floor(p.Z() / tol))
+		};
+		for (int64_t x = -1; x <= 1; x++) {
+			for (int64_t y = -1; y <= 1; y++) {
+				for (int64_t z = -1; z <= 1; z++) {
+					const auto it = grid.find({ cell[0] + x, cell[1] + y, cell[2] + z });
+					if (it == grid.end())
+						continue;
+					for (int32_t i : it->second) {
+						if ((mesh.points[i] - p).Modulus() <= tol)
+							return i;
+					}
+				}
 			}
 		}
-		if (clipped.size() >= 3)
-			out.push_back(std::move(clipped));
-	}
+		const int32_t index = static_cast<int32_t>(mesh.points.size());
+		mesh.points.push_back(p);
+		grid[cell].push_back(index);
+		return index;
+	};
 
-	// cap: the points on the plane, sorted counter-clockwise around its normal
-	std::vector<gp_XYZ> cap;
-	for (const gp_XYZ& p : capPoints) {
-		bool dup = false;
-		for (const gp_XYZ& q : cap)
-			dup = dup || (p - q).Modulus() <= eps;
-		if (!dup)
-			cap.push_back(p);
-	}
-	if (cap.size() >= 3) {
-		gp_XYZ center(0, 0, 0);
-		for (const gp_XYZ& p : cap)
-			center += p;
-		center /= static_cast<double>(cap.size());
+	std::vector<int32_t> nodes;
+	for (size_t f = 0; f < faces.size(); f++) {
+		const RawFace& face = faces[f];
+		nodes.clear();
+		for (int n = 1; n <= face.tri->NbNodes(); n++)
+			nodes.push_back(weld(face.tri->Node(n).Transformed(face.trsf).XYZ()));
 
-		const gp_XYZ helper = std::abs(plane.n.X()) < 0.9 ? gp_XYZ(1, 0, 0) : gp_XYZ(0, 1, 0);
-		const gp_XYZ u = plane.n.Crossed(helper).Normalized();
-		const gp_XYZ v = plane.n.Crossed(u);
-		std::sort(cap.begin(), cap.end(), [&](const gp_XYZ& a, const gp_XYZ& b) {
-			return std::atan2((a - center).Dot(v), (a - center).Dot(u)) <
-				std::atan2((b - center).Dot(v), (b - center).Dot(u));
-		});
-		out.push_back(std::move(cap));
+		for (int t = 1; t <= face.tri->NbTriangles(); t++) {
+			int a, b, c;
+			face.tri->Triangle(t).Get(a, b, c);
+			if (face.reversed)
+				std::swap(b, c);
+			const std::array<int32_t, 3> v = { nodes[a - 1], nodes[b - 1], nodes[c - 1] };
+			if (v[0] == v[1] || v[1] == v[2] || v[2] == v[0])
+				continue;
+			mesh.triangles.push_back(v);
+			mesh.triangleFaces.push_back(static_cast<int32_t>(f));
+		}
 	}
-	polys = std::move(out);
+	return !mesh.triangles.empty();
 }
 
-enum class PlaneCutResult
+// Bevels of the convex edges between two faces meeting at minAngle or more
+std::vector<Bevel>
+makeBevels(CutMesh& mesh, double distance, double minAngle)
 {
-	Done,
-	NotConvex,	// or not a single planar solid: use the OpenCascade chamfer instead
-	Vanished,	// the bevels cut the whole part away
-	Failed		// the result could not be turned into a valid solid
-};
+	// center of the volume: unlike the average of the points it doesn't jump when
+	// the triangulation changes
+	gp_XYZ center(0, 0, 0);
+	{
+		gp_XYZ origin(0, 0, 0);
+		for (const gp_XYZ& p : mesh.points)
+			origin += p;
+		origin /= static_cast<double>(mesh.points.size());
+		gp_XYZ moment(0, 0, 0);
+		double volume = 0.0;
+		for (const std::array<int32_t, 3>& v : mesh.triangles) {
+			const gp_XYZ p0 = mesh.points[v[0]] - origin;
+			const gp_XYZ p1 = mesh.points[v[1]] - origin;
+			const gp_XYZ p2 = mesh.points[v[2]] - origin;
+			const double tetra = p0.Dot(p1.Crossed(p2)) / 6.0;
+			volume += tetra;
+			moment += (p0 + p1 + p2) * (tetra / 4.0);
+		}
+		center = std::abs(volume) > 1e-12 ? origin + moment / volume : origin;
+	}
 
-PlaneCutResult
-planeCutChamfer(TopoDS_Shape& part, double distance, double minAngle)
+	mesh.locked.assign(mesh.points.size(), 0);
+	std::vector<std::vector<int32_t>> facePoints(mesh.faceNormals.size());
+	struct EdgeUse
+	{
+		int32_t	face;
+		int32_t	from;	// the direction of the edge in this triangle
+	};
+	std::map<std::pair<int32_t, int32_t>, std::vector<EdgeUse>> edges;
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		const std::array<int32_t, 3>& v = mesh.triangles[t];
+		const int32_t face = mesh.triangleFaces[t];
+		for (int k = 0; k < 3; k++) {
+			facePoints[face].push_back(v[k]);
+			const int32_t from = v[k], to = v[(k + 1) % 3];
+			edges[{ std::min(from, to), std::max(from, to) }].push_back({ face, from });
+		}
+	}
+
+	auto dihedral = [&](int32_t f1, int32_t f2) {
+		const gp_XYZ& n1 = mesh.faceNormals[f1];
+		const gp_XYZ& n2 = mesh.faceNormals[f2];
+		return std::atan2(n1.Crossed(n2).Modulus(), n1.Dot(n2));
+	};
+
+	// Faces that meet at a nearly flat edge are one surface. The input can have
+	// thin slivers next to a large face (e.g. Voronoi cells near a degenerate
+	// vertex), that appear and disappear from frame to frame. Alone, a sliver
+	// would limit the bevels of its edges to almost zero.
+	PointSets surfaces(static_cast<int32_t>(mesh.faceNormals.size()));
+	for (const auto& [edge, uses] : edges) {
+		if (uses.size() == 2 && uses[0].face != uses[1].face && dihedral(uses[0].face, uses[1].face) < theFlatAngle)
+			surfaces.join(uses[0].face, uses[1].face);
+	}
+	std::vector<std::vector<int32_t>> surfacePoints(mesh.faceNormals.size());
+	for (size_t f = 0; f < facePoints.size(); f++) {
+		std::vector<int32_t>& points = surfacePoints[surfaces.find(static_cast<int32_t>(f))];
+		points.insert(points.end(), facePoints[f].begin(), facePoints[f].end());
+	}
+
+	// length of the edge between two surfaces, summed over its mesh segments
+	auto surfacePair = [&](int32_t f1, int32_t f2) {
+		const int32_t s1 = surfaces.find(f1), s2 = surfaces.find(f2);
+		return std::make_pair(std::min(s1, s2), std::max(s1, s2));
+	};
+	std::map<std::pair<int32_t, int32_t>, double> edgeLengths;
+	for (const auto& [edge, uses] : edges) {
+		if (uses.size() == 2 && surfaces.find(uses[0].face) != surfaces.find(uses[1].face))
+			edgeLengths[surfacePair(uses[0].face, uses[1].face)] += (mesh.points[edge.second] - mesh.points[edge.first]).Modulus();
+	}
+
+	// distance from the edge into the surface of the face, to its farthest point
+	auto faceWidth = [&](int32_t face, const gp_XYZ& p, const gp_XYZ& inward) {
+		double width = 0.0;
+		for (int32_t i : surfacePoints[surfaces.find(face)])
+			width = std::max(width, inward.Dot(mesh.points[i] - p));
+		return width;
+	};
+
+	std::vector<Bevel> bevels;
+	for (const auto& [edge, uses] : edges) {
+		if (uses.size() != 2 || uses[0].face == uses[1].face)
+			continue;
+
+		const gp_XYZ& n1 = mesh.faceNormals[uses[0].face];
+		const gp_XYZ& n2 = mesh.faceNormals[uses[1].face];
+		const double angle = dihedral(uses[0].face, uses[1].face);
+		const gp_XYZ bisector = n1 + n2;
+		// nearly flat edges are neither cut nor locked: the float noise of the input
+		// decides if they are convex or concave, which changes from frame to frame
+		if (angle < std::max(minAngle, theFlatAngle) || bisector.Modulus() <= 1e-9)
+			continue;
+
+		const gp_XYZ& a = mesh.points[uses[0].from];
+		const gp_XYZ& b = mesh.points[uses[0].from == edge.first ? edge.second : edge.first];
+		gp_XYZ dir = b - a;
+		if (dir.Modulus() <= 0.0)
+			continue;
+		dir.Normalize();
+
+		// faces are counter-clockwise, so their inside is left of the edge direction
+		const gp_XYZ inward1 = n1.Crossed(dir).Normalized();
+		const gp_XYZ inward2 = n2.Crossed(dir.Reversed()).Normalized();
+
+		// going into the first face rises above the second one: the edge is concave
+		if (inward1.Dot(n2) > 0.0) {
+			mesh.locked[edge.first] = 1;
+			mesh.locked[edge.second] = 1;
+			continue;
+		}
+
+		const gp_XYZ n = bisector.Normalized();
+		const double halfWidth = 0.5 * std::min(faceWidth(uses[0].face, a, inward1), faceWidth(uses[1].face, a, inward2));
+		// the bevel goes sin(angle / 2) deep per unit of distance
+		const double halfToCenter = 0.5 * std::max(n.Dot(a - center), 0.0) / std::sin(0.5 * angle);
+		// a short edge gets a narrow bevel: when the edge shrinks to nothing (e.g. a
+		// Voronoi cell changes its topology) its bevel fades out instead of popping
+		const double halfLength = 0.5 * edgeLengths[surfacePair(uses[0].face, uses[1].face)];
+		// edges just over the Min Edge Angle get a narrow bevel, so it fades in
+		// while their angle grows instead of popping up
+		const double fade = std::min(1.0, (angle - minAngle) / theAngleFade);
+		const double d = fade * std::min({ distance, halfWidth, halfToCenter, halfLength });
+		if (d > 0.0)
+			bevels.push_back({ n, n.Dot(a + inward1 * d), a, b, d });
+	}
+	return bevels;
+}
+
+double
+distanceToSegment(const gp_XYZ& p, const gp_XYZ& a, const gp_XYZ& b)
+{
+	const gp_XYZ ab = b - a;
+	const double t = std::max(0.0, std::min(1.0, (p - a).Dot(ab) / ab.SquareModulus()));
+	return (p - (a + ab * t)).Modulus();
+}
+
+// Adds the triangles of a closed loop of points, counter-clockwise around normal.
+// All loop edges must get a triangle, or the mesh is no longer closed. The plane
+// crosses the diagonals of faces, so loops often have many points on one line.
+void
+addCap(CutMesh& mesh, const std::vector<int32_t>& loop, const gp_XYZ& normal, int32_t face)
+{
+	const gp_XYZ helper = std::abs(normal.X()) < 0.9 ? gp_XYZ(1, 0, 0) : gp_XYZ(0, 1, 0);
+	const gp_XYZ u = normal.Crossed(helper).Normalized();
+	const gp_XYZ v = normal.Crossed(u);
+	struct Point2
+	{
+		double x, y;
+	};
+	auto project = [&](const gp_XYZ& p) { return Point2{ p.Dot(u), p.Dot(v) }; };
+	auto cross = [](const Point2& a, const Point2& b, const Point2& c) {
+		return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+	};
+
+	std::map<int32_t, Point2> uv;
+	gp_XYZ center(0, 0, 0);
+	for (int32_t i : loop) {
+		uv[i] = project(mesh.points[i]);
+		center += mesh.points[i];
+	}
+	center /= static_cast<double>(loop.size());
+	const Point2 c2 = project(center);
+
+	// a fan from the center works on every loop that is star-shaped around it,
+	// that is every loop of a convex part
+	double scale = 0.0;
+	for (int32_t i : loop)
+		scale = std::max(scale, (mesh.points[i] - center).SquareModulus());
+	bool star = true;
+	for (size_t k = 0; k < loop.size(); k++)
+		star = star && cross(c2, uv[loop[k]], uv[loop[(k + 1) % loop.size()]]) >= -1e-9 * scale;
+	if (star) {
+		const int32_t centerIndex = static_cast<int32_t>(mesh.points.size());
+		mesh.points.push_back(center);
+		for (size_t k = 0; k < loop.size(); k++) {
+			mesh.triangles.push_back({ centerIndex, loop[k], loop[(k + 1) % loop.size()] });
+			mesh.triangleFaces.push_back(face);
+		}
+		return;
+	}
+
+	// ear clipping for the other loops
+	std::vector<int32_t> open = loop;
+	while (open.size() > 3) {
+		bool clipped = false;
+		for (size_t k = 0; k < open.size() && !clipped; k++) {
+			const int32_t a = open[(k + open.size() - 1) % open.size()];
+			const int32_t b = open[k];
+			const int32_t c = open[(k + 1) % open.size()];
+			if (cross(uv[a], uv[b], uv[c]) <= 0.0)
+				continue;
+			bool empty = true;
+			for (int32_t p : open) {
+				if (p != a && p != b && p != c && cross(uv[a], uv[b], uv[p]) > 0.0 &&
+					cross(uv[b], uv[c], uv[p]) > 0.0 && cross(uv[c], uv[a], uv[p]) > 0.0)
+					empty = false;
+			}
+			if (!empty)
+				continue;
+			mesh.triangles.push_back({ a, b, c });
+			mesh.triangleFaces.push_back(face);
+			open.erase(open.begin() + k);
+			clipped = true;
+		}
+		if (!clipped)
+			break;
+	}
+	// what is left is one triangle or points on one line: close it anyway
+	for (size_t k = 1; k + 1 < open.size(); k++) {
+		mesh.triangles.push_back({ open[0], open[k], open[k + 1] });
+		mesh.triangleFaces.push_back(face);
+	}
+}
+
+// Removes the piece above the bevel plane nearest to the edge and closes the hole
+void
+clipCutMesh(CutMesh& mesh, const Bevel& bevel, double eps)
+{
+	const size_t numPoints = mesh.points.size();
+	std::vector<double> heights(numPoints);
+	for (size_t i = 0; i < numPoints; i++)
+		heights[i] = bevel.n.Dot(mesh.points[i]) - bevel.c;
+
+	auto above = [&](int32_t i) {
+		return heights[i] > eps && !(static_cast<size_t>(i) < mesh.locked.size() && mesh.locked[i]);
+	};
+
+	// connected pieces of the points above the plane
+	PointSets sets(static_cast<int32_t>(numPoints));
+	std::vector<char> used(numPoints, 0);
+	for (const std::array<int32_t, 3>& v : mesh.triangles) {
+		for (int k = 0; k < 3; k++) {
+			used[v[k]] = 1;
+			const int32_t other = v[(k + 1) % 3];
+			if (above(v[k]) && above(other))
+				sets.join(v[k], other);
+		}
+	}
+
+	int32_t nearest = -1;
+	double nearestDistance = 2.0 * bevel.distance + eps;
+	for (size_t i = 0; i < numPoints; i++) {
+		if (!used[i] || !above(static_cast<int32_t>(i)))
+			continue;
+		const double d = distanceToSegment(mesh.points[i], bevel.a, bevel.b);
+		if (d <= nearestDistance) {
+			nearestDistance = d;
+			nearest = sets.find(static_cast<int32_t>(i));
+		}
+	}
+	if (nearest < 0)
+		return;
+
+	std::vector<char> removed(numPoints, 0);
+	for (size_t i = 0; i < numPoints; i++)
+		removed[i] = used[i] && above(static_cast<int32_t>(i)) && sets.find(static_cast<int32_t>(i)) == nearest;
+
+	// the point where an edge crosses the plane, shared by the triangles of the edge
+	std::map<std::pair<int32_t, int32_t>, int32_t> crossings;
+	auto crossing = [&](int32_t gone, int32_t kept) {
+		if (heights[kept] >= -eps)
+			return kept;	// the kept point is on the plane, or locked above it
+		const auto it = crossings.find({ std::min(gone, kept), std::max(gone, kept) });
+		if (it != crossings.end())
+			return it->second;
+		const int32_t index = static_cast<int32_t>(mesh.points.size());
+		const double t = heights[gone] / (heights[gone] - heights[kept]);
+		const gp_XYZ p = mesh.points[gone] + (mesh.points[kept] - mesh.points[gone]) * t;
+		mesh.points.push_back(p);
+		crossings[{ std::min(gone, kept), std::max(gone, kept) }] = index;
+		return index;
+	};
+
+	std::vector<std::array<int32_t, 3>> triangles;
+	std::vector<int32_t> triangleFaces;
+	std::map<int32_t, std::vector<int32_t>> capEdges;
+	std::vector<int32_t> poly;
+	for (size_t t = 0; t < mesh.triangles.size(); t++) {
+		const std::array<int32_t, 3>& v = mesh.triangles[t];
+		if (!removed[v[0]] && !removed[v[1]] && !removed[v[2]]) {
+			triangles.push_back(v);
+			triangleFaces.push_back(mesh.triangleFaces[t]);
+			continue;
+		}
+
+		poly.clear();
+		int32_t exit = -1, entry = -1;
+		auto add = [&](int32_t i) {
+			if (poly.empty() || poly.back() != i)
+				poly.push_back(i);
+		};
+		for (int k = 0; k < 3; k++) {
+			const int32_t a = v[k], b = v[(k + 1) % 3];
+			if (!removed[a]) {
+				add(a);
+				if (removed[b]) {
+					exit = crossing(b, a);
+					add(exit);
+				}
+			} else if (!removed[b]) {
+				entry = crossing(a, b);
+				add(entry);
+			}
+		}
+		while (poly.size() > 1 && poly.front() == poly.back())
+			poly.pop_back();
+		for (size_t k = 1; k + 1 < poly.size(); k++) {
+			triangles.push_back({ poly[0], poly[k], poly[k + 1] });
+			triangleFaces.push_back(mesh.triangleFaces[t]);
+		}
+
+		// the cap runs against the edge of the kept polygon
+		if (exit >= 0 && entry >= 0 && exit != entry)
+			capEdges[entry].push_back(exit);
+	}
+	mesh.triangles = std::move(triangles);
+	mesh.triangleFaces = std::move(triangleFaces);
+
+	// close every loop of the new edges with its own part of the cap
+	const int32_t capFace = static_cast<int32_t>(mesh.faceNormals.size());
+	mesh.faceNormals.push_back(bevel.n);
+	while (!capEdges.empty()) {
+		const int32_t start = capEdges.begin()->first;
+		std::vector<int32_t> loop;
+		int32_t current = start;
+		do {
+			const auto it = capEdges.find(current);
+			if (it == capEdges.end()) {
+				loop.clear();	// the loop doesn't close
+				break;
+			}
+			loop.push_back(current);
+			current = it->second.back();
+			it->second.pop_back();
+			if (it->second.empty())
+				capEdges.erase(it);
+		} while (current != start);
+		if (loop.size() >= 3)
+			addCap(mesh, loop, bevel.n, capFace);
+	}
+}
+
+// Appends the triangles to the output. Every face gets its own points, so
+// normals stay sharp across the edges between faces (like extractMesh). All
+// faces are flat, so Smooth and Surface normals are both the face normal.
+// Thin triangles of the cuts can't disturb them this way.
+void
+appendCutMesh(const CutMesh& mesh, NormalsMenuItems normals, std::vector<TD::Position>& points,
+	std::vector<TD::Vector>& pointNormals, std::vector<int32_t>& indices)
+{
+	std::vector<std::vector<size_t>> faceTriangles(mesh.faceNormals.size());
+	for (size_t t = 0; t < mesh.triangles.size(); t++)
+		faceTriangles[mesh.triangleFaces[t]].push_back(t);
+
+	std::map<int32_t, int32_t> remap;
+	for (size_t f = 0; f < faceTriangles.size(); f++) {
+		remap.clear();
+		const gp_XYZ& n = mesh.faceNormals[f];
+		for (size_t t : faceTriangles[f]) {
+			for (int32_t i : mesh.triangles[t]) {
+				const auto [it, added] = remap.emplace(i, static_cast<int32_t>(points.size()));
+				if (added) {
+					const gp_XYZ& p = mesh.points[i];
+					points.emplace_back(static_cast<float>(p.X()), static_cast<float>(p.Y()), static_cast<float>(p.Z()));
+					if (normals != NormalsMenuItems::Off)
+						pointNormals.emplace_back(static_cast<float>(n.X()), static_cast<float>(n.Y()), static_cast<float>(n.Z()));
+				}
+				indices.push_back(it->second);
+			}
+		}
+	}
+}
+
+// Cuts the part into mesh, the part then becomes null. Anything that is not
+// one closed solid, or has no edges to cut, stays in part, unmodified.
+// Returns false if the part can't be triangulated.
+bool
+planeCutChamfer(TopoDS_Shape& part, const OcctSettings& settings, CutMesh& mesh)
 {
 	TopoDS_Shape solid;
 	int numSolids = 0;
 	for (TopExp_Explorer e(part, TopAbs_SOLID); e.More(); e.Next(), numSolids++)
 		solid = e.Current();
 	if (numSolids != 1)
-		return PlaneCutResult::NotConvex;
+		return true;
 
-	TopTools_IndexedMapOfShape vertices;
-	TopExp::MapShapes(solid, TopAbs_VERTEX, vertices);
-	if (vertices.Extent() < 4)
-		return PlaneCutResult::NotConvex;
+	double size = 0.0;
+	if (!buildCutMesh(solid, settings.deflection, settings.angularDeflection, mesh, size))
+		return false;
 
-	gp_XYZ lo(1e300, 1e300, 1e300), hi(-1e300, -1e300, -1e300);
-	std::vector<gp_XYZ> points;
-	for (int i = 1; i <= vertices.Extent(); i++) {
-		const gp_XYZ p = BRep_Tool::Pnt(TopoDS::Vertex(vertices(i))).XYZ();
-		points.push_back(p);
-		lo.SetCoord(std::min(lo.X(), p.X()), std::min(lo.Y(), p.Y()), std::min(lo.Z(), p.Z()));
-		hi.SetCoord(std::max(hi.X(), p.X()), std::max(hi.Y(), p.Y()), std::max(hi.Z(), p.Z()));
+	const std::vector<Bevel> bevels = makeBevels(mesh, settings.radius, settings.edgeAngle);
+	if (bevels.empty()) {
+		mesh = CutMesh();
+		return true;
 	}
-	const double size = (hi - lo).Modulus();
-	// the input comes as floats and merged faces keep that noise
-	const double convexTol = theUnifyLinearTolerance + 1e-6 * size;
+
 	const double eps = 1e-9 * size;
+	for (const Bevel& bevel : bevels)
+		clipCutMesh(mesh, bevel, eps);
 
-	// face planes, the part must lie on the inner side of all of them
-	std::vector<CutPlane> planes;
-	for (TopExp_Explorer e(solid, TopAbs_FACE); e.More(); e.Next()) {
-		const TopoDS_Face& face = TopoDS::Face(e.Current());
-		gp_Dir n;
-		if (!planeNormal(face, n))
-			return PlaneCutResult::NotConvex;
-		CutPlane plane{ n.XYZ(), -1e300 };
-		for (TopExp_Explorer v(face, TopAbs_VERTEX); v.More(); v.Next())
-			plane.c = std::max(plane.c, plane.n.Dot(BRep_Tool::Pnt(TopoDS::Vertex(v.Current())).XYZ()));
-		for (const gp_XYZ& p : points) {
-			if (plane.n.Dot(p) > plane.c + convexTol)
-				return PlaneCutResult::NotConvex;
-		}
-		planes.push_back(plane);
-	}
-
-	// bevel planes of the sharp edges
-	const size_t numFacePlanes = planes.size();
-	TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
-	TopExp::MapShapesAndAncestors(solid, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
-	for (int i = 1; i <= edgeFaces.Extent(); i++) {
-		const TopoDS_Edge& edge = TopoDS::Edge(edgeFaces.FindKey(i));
-		const TopTools_ListOfShape& faces = edgeFaces.FindFromIndex(i);
-		if (faces.Extent() != 2 || BRep_Tool::Degenerated(edge))
-			continue;
-
-		gp_Dir d1, d2;
-		if (!planeNormal(TopoDS::Face(faces.First()), d1) || !planeNormal(TopoDS::Face(faces.Last()), d2))
-			return PlaneCutResult::NotConvex;
-		if (d1.Angle(d2) < minAngle)
-			continue;
-
-		TopoDS_Vertex v0, v1;
-		TopExp::Vertices(edge, v0, v1);
-		if (v0.IsNull() || v1.IsNull())
-			continue;
-		const gp_XYZ p0 = BRep_Tool::Pnt(v0).XYZ();
-		const gp_XYZ dir = BRep_Tool::Pnt(v1).XYZ() - p0;
-		const gp_XYZ bisector = d1.XYZ() + d2.XYZ();
-		if (dir.Modulus() <= eps || bisector.Modulus() <= 1e-9)
-			continue;
-
-		// direction from the edge into the first face, away from the second one
-		gp_XYZ inward = dir.Crossed(d1.XYZ()).Normalized();
-		if (inward.Dot(d2.XYZ()) > 0.0)
-			inward.Reverse();
-
-		const gp_XYZ n = bisector.Normalized();
-		planes.push_back({ n, n.Dot(p0 + inward * distance) });
-	}
-	if (planes.size() == numFacePlanes)
-		return PlaneCutResult::Done;	// no sharp edges
-
-	// intersect all half-spaces, starting from a box around the part
-	const gp_XYZ margin(0.1 * size + 1e-6, 0.1 * size + 1e-6, 0.1 * size + 1e-6);
-	std::vector<CutPolygon> polys = makeCutBox(lo - margin, hi + margin);
-	for (const CutPlane& plane : planes) {
-		clipPolyhedron(polys, plane, eps);
-		if (polys.size() < 4)
-			return PlaneCutResult::Vanished;
-	}
-
-	// weld the corners computed separately by neighbouring polygons, drop
-	// the edges and polygons that collapse
-	const double weldTol = std::max(10.0 * theSewingTolerance, 1e-7 * size);
-	std::vector<gp_XYZ> corners;
-	for (CutPolygon& poly : polys) {
-		CutPolygon welded;
-		for (const gp_XYZ& p : poly) {
-			gp_XYZ q = p;
-			bool found = false;
-			for (const gp_XYZ& c : corners) {
-				if ((c - p).Modulus() <= weldTol) {
-					q = c;
-					found = true;
-					break;
-				}
-			}
-			if (!found)
-				corners.push_back(p);
-			if (welded.empty() || !welded.back().IsEqual(q, 0.0))
-				welded.push_back(q);
-		}
-		while (welded.size() > 1 && welded.front().IsEqual(welded.back(), 0.0))
-			welded.pop_back();
-		poly = welded.size() >= 3 ? std::move(welded) : CutPolygon();
-	}
-	polys.erase(std::remove_if(polys.begin(), polys.end(), [](const CutPolygon& p) { return p.empty(); }), polys.end());
-	if (polys.size() < 4)
-		return PlaneCutResult::Vanished;
-
-	BRepBuilderAPI_Sewing sewing(theSewingTolerance);
-	std::vector<gp_Pnt> pts;
-	for (const CutPolygon& poly : polys) {
-		pts.clear();
-		for (const gp_XYZ& p : poly)
-			pts.emplace_back(p);
-		const TopoDS_Face face = makePolygonFace(pts);
-		if (face.IsNull())
-			return PlaneCutResult::Failed;
-		sewing.Add(face);
-	}
-	sewing.Perform();
-
-	TopoDS_Shape result;
-	for (TopExp_Explorer e(sewing.SewedShape(), TopAbs_SHELL); e.More(); e.Next()) {
-		if (!result.IsNull() || !BRep_Tool::IsClosed(e.Current()))
-			return PlaneCutResult::Failed;
-		BRepBuilderAPI_MakeSolid makeSolid(TopoDS::Shell(e.Current()));
-		if (!makeSolid.IsDone())
-			return PlaneCutResult::Failed;
-		ShapeFix_Solid fix(makeSolid.Solid());
-		fix.Perform();
-		result = fix.Solid();
-	}
-	if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid())
-		return PlaneCutResult::Failed;
-
-	part = result;
-	return PlaneCutResult::Done;
+	part.Nullify();
+	return true;
 }
 
 // Point normals from the triangles: every point gets the average of the normals
@@ -771,33 +1078,21 @@ occtProcess(const TD::Position* points, int32_t numPoints, const std::vector<int
 		double tooThinEdge = std::numeric_limits<double>::infinity();
 		int failed = 0;
 		std::string failure;
-		// Plane Cut only
-		int notConvex = 0;
-		int cutFailed = 0;
-		int vanished = 0;
+		int cutFailed = 0;	// Plane Cut only
+		std::vector<CutMesh> cutMeshes;
 		const bool planeCut = settings.modifier == ModifierMenuItems::Planecut;
 		if (settings.radius > 0.0) {
 			for (TopoDS_Shape& part : parts) {
 				if (planeCut) {
-					const PlaneCutResult cut = planeCutChamfer(part, settings.radius, settings.edgeAngle);
-					if (cut == PlaneCutResult::Done)
-						continue;
-					if (cut == PlaneCutResult::Vanished) {
-						vanished++;
-						part.Nullify();
-						continue;
-					}
-					// not convex or the cut failed: the regular chamfer below
-					if (cut == PlaneCutResult::NotConvex)
-						notConvex++;
-					else
+					cutMeshes.emplace_back();
+					if (!planeCutChamfer(part, settings, cutMeshes.back()))
 						cutFailed++;
+					continue;
 				}
 
-				const ModifierMenuItems modifier = planeCut ? ModifierMenuItems::Chamfer : settings.modifier;
 				std::string partFailure;
 				double shortestEdge = 0.0;
-				if (applyModifier(modifier, settings.radius, settings.edgeAngle, part, partFailure, shortestEdge))
+				if (applyModifier(settings.modifier, settings.radius, settings.edgeAngle, part, partFailure, shortestEdge))
 					continue;
 				// broken input geometry is reported as it is, whatever the size
 				const bool invalidInput = partFailure == theInvalidInput;
@@ -821,6 +1116,8 @@ occtProcess(const TD::Position* points, int32_t numPoints, const std::vector<int
 
 		extractMesh(compound, settings.deflection, settings.angularDeflection, settings.normals,
 			result.points, result.normals, result.indices);
+		for (const CutMesh& mesh : cutMeshes)
+			appendCutMesh(mesh, settings.normals, result.points, result.normals, result.indices);
 
 		std::stringstream warning;
 		if (settings.radius > 0.0 && numSolids == 0)
@@ -832,13 +1129,8 @@ occtProcess(const TD::Position* points, int32_t numPoints, const std::vector<int
 				<< " is too large, those parts have edges as short as " << tooThinEdge
 				<< " (" << (fillet ? "radius" : "distance") << " must be under half the edge length). ";
 		}
-		if (notConvex > 0)
-			warning << notConvex << " of " << parts.size() << " parts are not convex, the regular chamfer was used on them. ";
 		if (cutFailed > 0)
-			warning << "Plane cut failed on " << cutFailed << " of " << parts.size() << " parts, the regular chamfer was used on them. ";
-		if (vanished > 0)
-			warning << vanished << " of " << parts.size() << " parts were cut away completely, distance " << settings.radius
-				<< " is larger than the parts. ";
+			warning << "Plane cut left " << cutFailed << " of " << parts.size() << " parts unmodified: they could not be triangulated. ";
 		if (failed > 0)
 			warning << failed << " of " << parts.size() << " parts left unmodified: " << failure << ". ";
 		if (skipped > 0)

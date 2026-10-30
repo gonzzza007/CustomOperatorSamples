@@ -1,5 +1,9 @@
 # Instructions for AI agents
 
+# General
+
+- Format your replies close to ASD-STE100 Simplified Technical English (STE) documentation format
+
 ## Git
 - **Never commit, amend, push, rebase, or otherwise change git history.** The repository owner always commits manually.
 - Leave all changes as uncommitted modifications in the working tree. Do not stage files either.

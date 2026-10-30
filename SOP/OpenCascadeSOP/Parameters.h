@@ -34,7 +34,7 @@ enum class ModifierMenuItems
 {
 	Fillet, // default
 	Chamfer,
-	Planecut	// chamfer by cutting convex parts with bevel planes
+	Planecut	// chamfer by cutting convex edges with bevel planes
 };
 
 enum class NormalsMenuItems
@@ -52,7 +52,7 @@ public:
 	static void		setup(TD::OP_ParameterManager*);
 
 	// Fillet (BRepFilletAPI_MakeFillet), Chamfer (BRepFilletAPI_MakeChamfer)
-	// or Plane Cut (chamfer by cutting convex parts with bevel planes)
+	// or Plane Cut (chamfer by cutting convex edges with bevel planes)
 	static ModifierMenuItems	evalModifier(const TD::OP_Inputs* input);
 
 	// fillet radius or chamfer distance

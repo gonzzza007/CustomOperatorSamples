@@ -13,7 +13,7 @@ Windows: use [vcpkg](https://vcpkg.io/) (classic mode with `vcpkg integrate inst
 * **Modifier** - select the OCCT modifier.
   * **Fillet** - rounds the edges (BRepFilletAPI_MakeFillet).
   * **Chamfer** - bevels the edges (BRepFilletAPI_MakeChamfer).
-  * **Chamfer (Plane Cut)** - bevels convex parts by cutting them with one plane per edge, halfway between its two faces. Never fails on thin parts: once the distance is over half a face's width the bevels meet in a ridge or a point and the face disappears; a part smaller than the distance is cut away completely. Faster than Chamfer for animated input. Where three bevels meet the corner is a point, not a small triangle like in Chamfer. Parts that are not convex use the regular Chamfer.
+  * **Chamfer (Plane Cut)** - bevels every convex edge with one plane, halfway between its two faces. Concave edges stay untouched. Never fails on thin parts and changes smoothly with the distance, also when animated: every edge stops by itself at half the width of its faces, half its length and halfway to the center of the part. It also changes smoothly with animated input whose topology changes (e.g. Voronoi cells): new edges start with no bevel, nearly flat edges (under 0.5°) are ignored and their faces count as one surface, and bevels fade in over 5° above the Min Edge Angle. Past that limit the shape no longer changes, and a convex part can't be cut away. Where bevels meet the corner is a point, not a small triangle like in Chamfer.
 * **Radius / Distance** - fillet radius or chamfer distance. 0 outputs the input unmodified (triangulated).
 * **Min Edge Angle** - only edges whose faces meet at a larger angle (degrees) are modified.
 * **Mesh Deflection** - max distance between the output triangles and the real surface, smaller is smoother.
@@ -27,5 +27,5 @@ Windows: use [vcpkg](https://vcpkg.io/) (classic mode with `vcpkg integrate inst
 * Polygons are grouped into shells by shared points. Groups that are not closed on their own (e.g. Box SOP, where every face has its own corner points) are welded by point position, so they don't need a Fuse/Facet SOP. Closed cells that only touch each other stay separate.
 * Input without any closed shell produces a warning and is output unmodified.
 * Every closed shell becomes its own solid and is modified separately. A part the modifier fails on is output unmodified and reported in the warning.
-* The Radius / Distance must be under half the length of the shortest modified edge of a part (for a box: half its thinnest side), otherwise the fillets / chamfers of both ends of that edge overlap and the part is skipped. The warning reports the shortest edge of the skipped parts.
+* The Radius / Distance of Fillet and Chamfer must be under half the length of the shortest modified edge of a part (for a box: half its thinnest side), otherwise the fillets / chamfers of both ends of that edge overlap and the part is skipped. The warning reports the shortest edge of the skipped parts. Chamfer (Plane Cut) has no such limit.
 * The result is cached, the node recomputes only when the input or parameters change. Fillets can take a while on complex input.
