@@ -25,7 +25,7 @@
 #include <vector>
 
 /*
-Soft body blobs trapped inside a closed container.
+Soft body blobs (hollow spheres or solid cubes) trapped inside a closed container.
 
 Inputs:
 	0 - Container: a closed mesh (e.g. a 1x1x1 Box SOP). Polygons are triangulated as fans.
@@ -66,7 +66,7 @@ private:
 
 	std::vector<sb::Vec3>			mySeeds;
 	std::vector<sb::SeedOverrides>	myOverrides;
-	std::vector<sb::Vec3>			myNormals;
+	std::vector<sb::Vec3>			myPositions, myNormals;	// of the surface vertices
 	std::vector<int32_t>			myOutTriangles;	// solver triangles with TD's (clockwise) winding
 
 	uint64_t		myContainerHash = 0;
@@ -74,6 +74,7 @@ private:
 	uint64_t		myGenHash = 0;
 	bool			myResetRequested = true;
 	bool			myOffsetSurface = true;
+	int				myNormalSmoothing = 1;
 
 	// Info CHOP
 	float			myStepMs = 0.0f;

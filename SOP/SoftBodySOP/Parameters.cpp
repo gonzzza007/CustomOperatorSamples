@@ -81,6 +81,12 @@ Parameters::evalSurfaceoffset(const TD::OP_Inputs* inputs)
 	return inputs->getParInt(SurfaceoffsetName) != 0;
 }
 
+int
+Parameters::evalNormalsmoothing(const TD::OP_Inputs* inputs)
+{
+	return inputs->getParInt(NormalsmoothingName);
+}
+
 sb::SimSettings
 Parameters::evalSimSettings(const TD::OP_Inputs* inputs)
 {
@@ -109,9 +115,12 @@ sb::GenerationSettings
 Parameters::evalGenerationSettings(const TD::OP_Inputs* inputs)
 {
 	sb::GenerationSettings g;
+	const char* shape = inputs->getParString(BlobobjectName);
+	g.shape = (shape && std::strcmp(shape, "Cube") == 0) ? sb::BlobShape::Cube : sb::BlobShape::Sphere;
 	g.radiusMin = static_cast<float>(inputs->getParDouble(RadiusminName));
 	g.radiusMax = static_cast<float>(inputs->getParDouble(RadiusmaxName));
 	g.seed = static_cast<uint32_t>(inputs->getParInt(SeedName));
+	g.randomOrientation = inputs->getParInt(RandomorientName) != 0;
 	g.edgeLength = static_cast<float>(inputs->getParDouble(EdgelengthName));
 	g.minPoints = inputs->getParInt(MinpointsName);
 	g.maxPoints = inputs->getParInt(MaxpointsName);
@@ -194,10 +203,32 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 	appendInt(manager, IterationsName, IterationsLabel, sim, 8, 1, 30, 1, 100);
 
 	// --- Blobs page (changes regenerate the blobs) ---
+	{
+		TD::OP_StringParameter p;
+		p.name = BlobobjectName;
+		p.label = BlobobjectLabel;
+		p.page = blobs;
+		p.defaultValue = "Sphere";
+		std::array<const char*, 2> names = { "Sphere", "Cube" };
+		std::array<const char*, 2> labels = { "Sphere", "Cube" };
+		TD::OP_ParAppendResult res = manager->appendMenu(p, static_cast<int32_t>(names.size()), names.data(), labels.data());
+		assert(res == TD::OP_ParAppendResult::Success);
+		(void)res;
+	}
 	// Sliders go to 100; typed values above that are accepted (no upper clamp).
 	appendFloat(manager, RadiusminName, RadiusminLabel, blobs, 0.06, 0.0, 100.0, true, 0.001);
 	appendFloat(manager, RadiusmaxName, RadiusmaxLabel, blobs, 0.12, 0.0, 100.0, true, 0.001);
 	appendInt(manager, SeedName, SeedLabel, blobs, 1, 0, 100, 0, 1 << 30);
+	{
+		TD::OP_NumericParameter p;
+		p.name = RandomorientName;
+		p.label = RandomorientLabel;
+		p.page = blobs;
+		p.defaultValues[0] = 1.0;
+		TD::OP_ParAppendResult res = manager->appendToggle(p);
+		assert(res == TD::OP_ParAppendResult::Success);
+		(void)res;
+	}
 	appendFloat(manager, EdgelengthName, EdgelengthLabel, blobs, 0.025, 0.005, 0.1, true, 0.001);
 	appendInt(manager, MinpointsName, MinpointsLabel, blobs, 42, 12, 2562, 12, 40962);
 	appendInt(manager, MaxpointsName, MaxpointsLabel, blobs, 2562, 12, 10242, 12, 40962);
@@ -227,6 +258,7 @@ Parameters::setup(TD::OP_ParameterManager* manager)
 		assert(res == TD::OP_ParAppendResult::Success);
 		(void)res;
 	}
+	appendInt(manager, NormalsmoothingName, NormalsmoothingLabel, blobs, 1, 0, 4, 0, 8);
 	appendInt(manager, SdfresolutionName, SdfresolutionLabel, blobs, 64, 16, 256, 8, 512);
 }
 

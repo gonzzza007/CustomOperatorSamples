@@ -73,6 +73,9 @@ constexpr static char IterationsName[] = "Iterations";
 constexpr static char IterationsLabel[] = "Iterations";
 
 // Page "Blobs"
+constexpr static char BlobobjectName[] = "Blobobject";
+constexpr static char BlobobjectLabel[] = "Blob Object";
+
 constexpr static char RadiusminName[] = "Radiusmin";
 constexpr static char RadiusminLabel[] = "Radius Min";
 
@@ -81,6 +84,9 @@ constexpr static char RadiusmaxLabel[] = "Radius Max";
 
 constexpr static char SeedName[] = "Seed";
 constexpr static char SeedLabel[] = "Seed";
+
+constexpr static char RandomorientName[] = "Randomorient";
+constexpr static char RandomorientLabel[] = "Random Orientation";
 
 constexpr static char EdgelengthName[] = "Edgelength";
 constexpr static char EdgelengthLabel[] = "Edge Length";
@@ -103,12 +109,21 @@ constexpr static char CollisionradiusLabel[] = "Collision Radius";
 constexpr static char SurfaceoffsetName[] = "Surfaceoffset";
 constexpr static char SurfaceoffsetLabel[] = "Surface Offset";
 
+constexpr static char NormalsmoothingName[] = "Normalsmoothing";
+constexpr static char NormalsmoothingLabel[] = "Normal Smoothing";
+
 constexpr static char SdfresolutionName[] = "Sdfresolution";
 constexpr static char SdfresolutionLabel[] = "Container Resolution";
 
 #pragma endregion
 
 #pragma region Menus
+
+enum class BlobobjectMenuItems
+{
+	Sphere,
+	Cube
+};
 
 enum class MassmodeMenuItems
 {
@@ -127,6 +142,7 @@ public:
 
 	static bool		evalSimulate(const TD::OP_Inputs* inputs);
 	static bool		evalSurfaceoffset(const TD::OP_Inputs* inputs);
+	static int		evalNormalsmoothing(const TD::OP_Inputs* inputs);
 
 	// Parameters that may change every frame.
 	static sb::SimSettings			evalSimSettings(const TD::OP_Inputs* inputs);

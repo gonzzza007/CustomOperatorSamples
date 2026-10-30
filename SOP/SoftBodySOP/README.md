@@ -1,7 +1,13 @@
 # Soft Body SOP
 
-Soft, squishy blobs trapped inside a closed container. Each blob is an icosphere whose
-vertices are simulated as particles with an XPBD (extended position based dynamics) solver.
+Soft, squishy blobs trapped inside a closed container, simulated as particles with an XPBD (extended position
+based dynamics) solver. A blob is either
+
+* a **sphere**: a hollow icosphere whose vertices are the particles, kept inflated by one volume constraint, or
+* a **cube**: a solid lattice of particles split into tetrahedra (6 per lattice cell), with a distance constraint on
+  every tet edge and a volume constraint on every tet, as in Müller's *Ten Minute Physics* soft body tutorial.
+  An inverted tet has negative volume, so the same constraint turns it back inside out. Only the surface particles
+  collide.
 
 ## Inputs
 
@@ -11,7 +17,7 @@ vertices are simulated as particles with an XPBD (extended position based dynami
    container's points every frame; move it with a transform instead).
 2. **Seeds** – one point per blob, e.g. a Sprinkle SOP filling the volume of the container.
    Optional point attributes override the parameters per blob:
-   * `radius` (or `pscale`) – blob radius
+   * `radius` (or `pscale`) – blob radius (cubes: half the edge length)
    * `stiffness` – 0..1
    * `mass` – kg
 
@@ -21,25 +27,27 @@ neighbours. Seeds outside the container are skipped and reported as a warning.
 
 ## Output
 
-Triangulated blob meshes with point normals and an integer point attribute `blobid`.
+Triangulated blob surfaces with point normals and an integer point attribute `blobid`. Only the surface is output,
+not a cube's interior particles. Every side of a cube has its own points, so its edges stay hard.
 
 ## Parameters
 
 ### Simulation
 * **Simulate** – advance the simulation every frame.
-* **Reset** – rebuild the blobs from the inputs. Changing the seeds or Edge Length, Min/Max Points, Mass Mode,
-  Mass or Collision Radius also resets. Radius Min/Max, Seed and Fill do **not** reset: the blobs grow or shrink
+* **Reset** – rebuild the blobs from the inputs. Changing the seeds or Blob Object, Random Orientation, Edge Length,
+  Min/Max Points, Mass Mode, Mass or Collision Radius also resets. Radius Min/Max, Seed and Fill do **not** reset: the blobs grow or shrink
   live, but keep the point count chosen at the last reset. Press Reset after a big size change to re-plan it.
 * **Stiffness** – 0..1, how strongly the surface keeps its edge lengths (jelly → rubber).
-* **Bending** – 0..1, resistance to sharp folds. Removes wrinkles that would otherwise stay after a blob was
+* **Bending** – spheres only, 0..1, resistance to sharp folds. Removes wrinkles that would otherwise stay after a blob was
   squeezed, while flat contact faces stay possible. 0 turns it off (cheaper, wrinkly, flabby).
-* **Volume Stiffness** – 0..1, how strongly a blob keeps its volume.
+* **Volume Stiffness** – 0..1, how strongly a blob keeps its volume (cubes: every tet keeps its volume; 0 turns the
+  tet volumes off, which is cheaper, and the edges alone still hold the cube together).
 * **Pressure** – rest volume multiplier; >1 inflates the blobs, <1 deflates them.
 * **Fill** – 0..0.99, the fraction of the container the blobs may occupy together. When the target radii
   ask for more, all targets are scaled down uniformly to fit (Info CHOP `target_scale` < 1). Asking for
   more than fits would make blobs overlap. Use 0.9–0.99 with Gravity 0 for a tightly packed, Voronoi-like look.
 * **Grow Speed** – 1/s, how fast blobs approach their target radius. 0 freezes their size.
-* **Shape Memory** – 0..1, pull towards the original sphere shape (shape matching). Prevents crumpling at low stiffness.
+* **Shape Memory** – 0..1, pull towards the original sphere or cube shape (shape matching). Prevents crumpling at low stiffness.
 * **Damping** – velocity damping per second.
 * **Friction** – 0..1, against the walls and between blobs.
 * **Restitution** – 0..1, bounce off the container walls.
@@ -48,25 +56,35 @@ Triangulated blob meshes with point normals and an integer point attribute `blob
   more iterations make constraints stiffer.
 
 ### Blobs
+* **Blob Object** – Sphere or Cube.
 * **Radius Min / Max** – random target radius range per blob. Sliders go to 100, larger values can be typed.
   Targets larger than the container are fine: Fill limits the actual size.
-* **Seed** – random seed for the radii.
-* **Edge Length** – target spacing between particles. Each blob is a geodesic sphere whose point count is
-  chosen on reset from the size it will reach (its target radius after the Fill scaling), so all blobs get
+* **Seed** – random seed for the radii and cube orientations.
+* **Random Orientation** – cubes only: start every cube randomly rotated (from Seed, applied on reset). Off: all cubes
+  start axis aligned.
+* **Edge Length** – target spacing between particles. Each blob's point count is chosen on reset from the size it will reach (its target radius after the Fill scaling), so all blobs get
   about the same particle spacing and behave alike regardless of size.
 * **Min Points / Max Points** – clamp for the points per blob. Geodesic spheres come in
-  10·n²+2 points: 12, 42, 92, 162, 252, 362, 492, 642, 812, 1002, … 2562 (n = 16).
+  10·n²+2 points: 12, 42, 92, 162, 252, 362, 492, 642, 812, 1002, … 2562 (n = 16). Cubes of n cells per side have
+  (n+1)³ points and 6·n³ tets: 27, 64, 125, 216, 343, 512, 729, 1000, 1331, 1728, 2197 (n = 12), … Cubes are solid,
+  so they need more points than spheres for the same spacing; a coarser Edge Length (e.g. 0.04) keeps them fast.
 * **Mass Mode / Mass** – density in kg/m³ (bigger blobs are heavier) or a fixed mass per blob.
 * **Collision Radius** – particle radius for collisions, 0 = half the Edge Length. Blobs touch at this distance
   from their points; coarse blobs get a slightly larger radius so others can't slip between their points.
 * **Surface Offset** – draw the surface pushed out by the collision radius, so touching blobs look touching.
   Off draws the simulated points themselves, which leaves a visible gap of 2 × Collision Radius between blobs.
+  Cube edges and corners move out diagonally, to where the offset sides meet.
+* **Normal Smoothing** – passes that average each point normal with its neighbours' (0 = none, default 1).
+  Normals are always angle-weighted and ignore triangles the simulation has folded over, so single points
+  don't shade dark; smoothing softens the remaining speckle. It also smooths the Surface Offset direction.
+  On cubes it stays within each side, so the edges stay hard.
 * **Container Resolution** – cells along the longest side of the container's signed distance field.
 
 ## Info CHOP channels
 
 `blobs`, `particles`, `contacts`, `seeds_outside`, `started_small`, `step_ms`, `container_ms`, `volume_ratio`,
-`grow_ratio` (current / target radius, 1 = fully grown), `target_scale` (how much Fill scaled the targets down).
+`grow_ratio` (current / target radius, 1 = fully grown), `target_scale` (how much Fill scaled the targets down),
+`tets` (cubes only).
 
 ## Tight packing (Voronoi-like look)
 
@@ -78,6 +96,7 @@ Triangulated blob meshes with point normals and an integer point attribute `blob
 ## Notes
 
 * Build in **Release**; a Debug build of the solver is many times slower.
-* The solver is single-threaded. A few thousand particles at 4 substeps × 8 iterations run in a few ms.
-* The solver files (`SoftBodySolver`, `ContainerSDF`, `Icosphere` (geodesic spheres), `Vec3.h`) have no TouchDesigner
-  dependency and can be built and tested standalone.
+* The solver is single-threaded. A few thousand particles at 4 substeps × 8 iterations run in a few ms: 12 spheres
+  (2.2k particles) about 3 ms, 12 cubes (2.5k particles, 9k tets) about 5 ms.
+* The solver files (`SoftBodySolver`, `ContainerSDF`, `Icosphere` (geodesic spheres), `CubeLattice` (tet lattices),
+  `Vec3.h`) have no TouchDesigner dependency and can be built and tested standalone.

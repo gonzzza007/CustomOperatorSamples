@@ -1,4 +1,5 @@
 #include "SoftBodySolver.h"
+#include "CubeLattice.h"
 #include "Icosphere.h"
 
 #include <algorithm>
@@ -166,13 +167,20 @@ SoftBodySolver::setTargetRadii(float radiusMin, float radiusMax, uint32_t seed)
 		b.target = targetRadius(b, myRadiusFractions);
 }
 
+float
+SoftBodySolver::shapeUnitVolume() const
+{
+	// Volume at radius 1: the sphere's, or the cube's of edge length 2.
+	return myShape == BlobShape::Cube ? 8.0f : 4.0f / 3.0f * Pi;
+}
+
 void
-SoftBodySolver::updateBlobScale(Blob& b, int32_t)
+SoftBodySolver::updateBlobScale(Blob& b)
 {
 	const float r = b.radius;
 	b.restVolume = b.unitVolume * r * r * r;
 
-	float mass = myMassMode == MassMode::Density ? myMassValue * (4.0f / 3.0f) * Pi * r * r * r : myMassValue;
+	float mass = myMassMode == MassMode::Density ? myMassValue * shapeUnitVolume() * r * r * r : myMassValue;
 	if (b.massOverride > 0.0f)
 		mass = b.massOverride;
 	const float w = static_cast<float>(b.pointCount) / std::max(mass, 1e-6f);
@@ -188,9 +196,12 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 
 	myX.clear(); myPrev.clear(); myV.clear(); myVPre.clear(); myRestUnit.clear(); myContactN.clear();
 	myW.clear(); myBlobOf.clear(); myInContact.clear();
-	myTriangles.clear(); myEdges.clear(); myEdgeLambda.clear(); myBends.clear(); myBendLambda.clear();
+	myEdges.clear(); myEdgeLambda.clear(); myBends.clear(); myBendLambda.clear(); myTets.clear(); myTetLambda.clear();
 	myBlobs.clear(); myVolumeLambda.clear(); myPairs.clear();
+	mySurfacePoints.clear(); mySurfaceVertex.clear(); mySurfaceVertexBlob.clear(); mySurfaceTriangles.clear();
 
+	myShape = gen.shape;
+	const bool cubes = myShape == BlobShape::Cube;
 	const float edgeLength = std::max(gen.edgeLength, 1e-4f);
 	myParticleRadius = gen.collisionRadius > 0.0f ? gen.collisionRadius : edgeLength * 0.5f;
 	myMassMode = gen.massMode;
@@ -241,21 +252,23 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 			if (!inside[i])
 				continue;
 			targets.push_back(candidates[i].target);
-			unitVolumes.push_back(4.0f / 3.0f * Pi);
+			unitVolumes.push_back(shapeUnitVolume());
 		}
 		const float budget = std::clamp(gen.fill, 0.01f, 0.99f) * container->insideVolume() / std::max(gen.pressure, 0.01f);
 		planScale = budgetScale(targets, unitVolumes, pr, budget);
 	}
 
-	// Spawn radius: the target, shrunk so blobs neither overlap each other nor the walls.
-	// Blobs that don't fit start small and grow into place, squeezing their neighbours.
-	const float smallest = std::max(1.5f * pr, 1e-4f);
-	std::vector<float> spawn(n, 0.0f);
+	// Spawn radius: the target, shrunk so the blobs' bounding spheres neither overlap each other nor
+	// the walls (a cube's is sqrt 3 times its radius, whatever its orientation). Blobs that don't fit
+	// start small and grow into place, squeezing their neighbours.
+	const float bound = cubes ? std::sqrt(3.0f) : 1.0f;
+	const float smallest = std::max(1.5f * pr, 1e-4f) * bound;
+	std::vector<float> spawn(n, 0.0f);	// bounding sphere radius
 	for (size_t i = 0; i < n; ++i)
 	{
 		if (!inside[i])
 			continue;
-		const float finalRadius = candidates[i].target * planScale;
+		const float finalRadius = candidates[i].target * planScale * bound;
 		float r = finalRadius;
 		if (hasContainer)
 			r = std::min(r, -container->distance(seeds[i]) - pr);
@@ -275,115 +288,37 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 	}
 
 	// Build the blobs.
+	std::mt19937 orientRng(gen.seed ^ 0x5bd1e995u);
+	std::uniform_real_distribution<float> uni(0.0f, 1.0f);
 	for (size_t i = 0; i < n; ++i)
 	{
 		if (!inside[i])
 			continue;
 
 		Blob blob = candidates[i];
-		const float	planRadius = std::max(blob.target * planScale, spawn[i]);
-		const int	frequency = geodesicFrequencyFor(planRadius, edgeLength,
-								geodesicFrequencyAtLeast(gen.minPoints), geodesicFrequencyAtMost(gen.maxPoints));
-		const Icosphere& ico = getUnitGeodesicSphere(frequency);
-		const int32_t blobId = static_cast<int32_t>(myBlobs.size());
-
-		blob.pointStart = static_cast<int32_t>(myX.size());
-		blob.pointCount = static_cast<int32_t>(ico.points.size());
-		blob.triStart = static_cast<int32_t>(myTriangles.size() / 3);
-		blob.triCount = static_cast<int32_t>(ico.triangles.size() / 3);
-		blob.radius = spawn[i];
-
-		for (const Vec3& u : ico.points)
+		blob.radius = spawn[i] / bound;
+		const float planRadius = std::max(blob.target * planScale, blob.radius);
+		if (cubes)
 		{
-			myX.push_back(seeds[i] + u * blob.radius);
-			myRestUnit.push_back(u);
-			myW.push_back(1.0f);
-			myBlobOf.push_back(blobId);
-		}
-		for (int32_t idx : ico.triangles)
-			myTriangles.push_back(idx + blob.pointStart);
-
-		// Each edge of a closed, consistently wound mesh appears once in each direction:
-		// keeping only a < b gives every edge exactly once.
-		const size_t edgeStart = myEdges.size();
-		for (size_t t = 0; t < ico.triangles.size(); t += 3)
-		{
-			for (int e = 0; e < 3; ++e)
+			// Uniformly random rotation (Shoemake 1992). It also warm-starts the shape matching rotation.
+			if (gen.randomOrientation)
 			{
-				int32_t a = ico.triangles[t + e], b = ico.triangles[t + (e + 1) % 3];
-				if (a < b)
-				{
-					Edge edge;
-					edge.a = a + blob.pointStart;
-					edge.b = b + blob.pointStart;
-					edge.restUnit = length(ico.points[a] - ico.points[b]);
-					edge.blob = blobId;
-					blob.maxUnitEdge = std::max(blob.maxUnitEdge, edge.restUnit);
-					myEdges.push_back(edge);
-				}
+				float u1 = uni(orientRng), u2 = uni(orientRng), u3 = uni(orientRng);
+				float a = std::sqrt(1.0f - u1), b = std::sqrt(u1);
+				blob.quat[0] = a * std::sin(2.0f * Pi * u2);
+				blob.quat[1] = a * std::cos(2.0f * Pi * u2);
+				blob.quat[2] = b * std::sin(2.0f * Pi * u3);
+				blob.quat[3] = b * std::cos(2.0f * Pi * u3);
 			}
+			addCube(blob, seeds[i], latticeResolutionFor(planRadius, edgeLength,
+						latticeResolutionAtLeast(gen.minPoints), latticeResolutionAtMost(gen.maxPoints)));
 		}
-
-		// Group the edges by a greedy colouring: edges of one colour share no particle. In mesh order
-		// every edge would wait for the previous one's result, grouped they can be solved overlapped.
-		{
-			std::vector<uint64_t> used(ico.points.size(), 0);
-			std::vector<uint8_t> colour(myEdges.size() - edgeStart);
-			for (size_t e = 0; e < colour.size(); ++e)
-			{
-				const Edge& edge = myEdges[edgeStart + e];
-				uint64_t& ua = used[edge.a - blob.pointStart];
-				uint64_t& ub = used[edge.b - blob.pointStart];
-				const uint64_t taken = ua | ub;
-				uint8_t c = 0;
-				while (c < 63 && ((taken >> c) & 1))
-					++c;
-				colour[e] = c;
-				ua |= 1ull << c;
-				ub |= 1ull << c;
-			}
-			std::vector<Edge> grouped;
-			grouped.reserve(colour.size());
-			for (uint8_t c = 0, last = *std::max_element(colour.begin(), colour.end()); c <= last; ++c)
-				for (size_t e = 0; e < colour.size(); ++e)
-					if (colour[e] == c)
-						grouped.push_back(myEdges[edgeStart + e]);
-			std::copy(grouped.begin(), grouped.end(), myEdges.begin() + edgeStart);
-		}
-
-		// Bending: for every edge shared by two triangles, a soft distance constraint between the two
-		// far corners. It resists sharp folds (wrinkles) but hardly changes when a region flattens.
-		{
-			std::map<std::pair<int32_t, int32_t>, int32_t> firstOpposite;
-			for (size_t t = 0; t < ico.triangles.size(); t += 3)
-			{
-				for (int e = 0; e < 3; ++e)
-				{
-					int32_t a = ico.triangles[t + e], b = ico.triangles[t + (e + 1) % 3], c = ico.triangles[t + (e + 2) % 3];
-					auto key = std::make_pair(std::min(a, b), std::max(a, b));
-					auto it = firstOpposite.find(key);
-					if (it == firstOpposite.end())
-					{
-						firstOpposite[key] = c;
-						continue;
-					}
-					Edge bend;
-					bend.a = it->second + blob.pointStart;
-					bend.b = c + blob.pointStart;
-					bend.restUnit = length(ico.points[it->second] - ico.points[c]);
-					bend.blob = blobId;
-					myBends.push_back(bend);
-				}
-			}
-		}
-
-		float unitVolume = 0.0f;
-		for (size_t t = 0; t < ico.triangles.size(); t += 3)
-			unitVolume += dot(ico.points[ico.triangles[t]], cross(ico.points[ico.triangles[t + 1]], ico.points[ico.triangles[t + 2]]));
-		blob.unitVolume = unitVolume / 6.0f;
+		else
+			addSphere(blob, seeds[i], geodesicFrequencyFor(planRadius, edgeLength,
+						geodesicFrequencyAtLeast(gen.minPoints), geodesicFrequencyAtMost(gen.maxPoints)));
 
 		myBlobs.push_back(blob);
-		updateBlobScale(myBlobs.back(), blobId);
+		updateBlobScale(myBlobs.back());
 		++report.blobsCreated;
 	}
 
@@ -395,10 +330,178 @@ SoftBodySolver::reset(const std::vector<Vec3>& seeds, const std::vector<SeedOver
 	myInContact.assign(np, 0);
 	myEdgeLambda.assign(myEdges.size(), 0.0f);
 	myBendLambda.assign(myBends.size(), 0.0f);
+	myTetLambda.assign(myTets.size(), 0.0f);
 	myVolumeLambda.assign(myBlobs.size(), 0.0f);
 	myBlobRadius.assign(myBlobs.size(), myParticleRadius);
 	myMaxBlobRadius = myParticleRadius;
 	return report;
+}
+
+void
+SoftBodySolver::addSphere(Blob& blob, const Vec3& centre, int frequency)
+{
+	const Icosphere& ico = getUnitGeodesicSphere(frequency);
+	const int32_t blobId = static_cast<int32_t>(myBlobs.size());
+
+	blob.pointStart = static_cast<int32_t>(myX.size());
+	blob.pointCount = static_cast<int32_t>(ico.points.size());
+	blob.surfaceStart = static_cast<int32_t>(mySurfacePoints.size());
+	blob.surfaceCount = blob.pointCount;
+	blob.triStart = static_cast<int32_t>(mySurfaceTriangles.size() / 3);
+	blob.triCount = static_cast<int32_t>(ico.triangles.size() / 3);
+
+	// Every particle is on the surface and has exactly one surface vertex, with the same index.
+	for (const Vec3& u : ico.points)
+	{
+		const int32_t p = static_cast<int32_t>(myX.size());
+		myX.push_back(centre + u * blob.radius);
+		myRestUnit.push_back(u);
+		myW.push_back(1.0f);
+		myBlobOf.push_back(blobId);
+		mySurfacePoints.push_back(p);
+		mySurfaceVertex.push_back(p);
+		mySurfaceVertexBlob.push_back(blobId);
+	}
+	for (int32_t idx : ico.triangles)
+		mySurfaceTriangles.push_back(idx + blob.pointStart);
+
+	// Each edge of a closed, consistently wound mesh appears once in each direction:
+	// keeping only a < b gives every edge exactly once.
+	const size_t edgeStart = myEdges.size();
+	for (size_t t = 0; t < ico.triangles.size(); t += 3)
+	{
+		for (int e = 0; e < 3; ++e)
+		{
+			int32_t a = ico.triangles[t + e], b = ico.triangles[t + (e + 1) % 3];
+			if (a < b)
+			{
+				Edge edge;
+				edge.a = a + blob.pointStart;
+				edge.b = b + blob.pointStart;
+				edge.restUnit = length(ico.points[a] - ico.points[b]);
+				edge.blob = blobId;
+				blob.maxUnitEdge = std::max(blob.maxUnitEdge, edge.restUnit);
+				myEdges.push_back(edge);
+			}
+		}
+	}
+
+	// Group the edges by a greedy colouring: edges of one colour share no particle. In mesh order
+	// every edge would wait for the previous one's result, grouped they can be solved overlapped.
+	// (Cube lattices come coloured already.)
+	{
+		std::vector<uint64_t> used(ico.points.size(), 0);
+		std::vector<uint8_t> colour(myEdges.size() - edgeStart);
+		for (size_t e = 0; e < colour.size(); ++e)
+		{
+			const Edge& edge = myEdges[edgeStart + e];
+			uint64_t& ua = used[edge.a - blob.pointStart];
+			uint64_t& ub = used[edge.b - blob.pointStart];
+			const uint64_t taken = ua | ub;
+			uint8_t c = 0;
+			while (c < 63 && ((taken >> c) & 1))
+				++c;
+			colour[e] = c;
+			ua |= 1ull << c;
+			ub |= 1ull << c;
+		}
+		std::vector<Edge> grouped;
+		grouped.reserve(colour.size());
+		for (uint8_t c = 0, last = *std::max_element(colour.begin(), colour.end()); c <= last; ++c)
+			for (size_t e = 0; e < colour.size(); ++e)
+				if (colour[e] == c)
+					grouped.push_back(myEdges[edgeStart + e]);
+		std::copy(grouped.begin(), grouped.end(), myEdges.begin() + edgeStart);
+	}
+
+	// Bending: for every edge shared by two triangles, a soft distance constraint between the two
+	// far corners. It resists sharp folds (wrinkles) but hardly changes when a region flattens.
+	{
+		std::map<std::pair<int32_t, int32_t>, int32_t> firstOpposite;
+		for (size_t t = 0; t < ico.triangles.size(); t += 3)
+		{
+			for (int e = 0; e < 3; ++e)
+			{
+				int32_t a = ico.triangles[t + e], b = ico.triangles[t + (e + 1) % 3], c = ico.triangles[t + (e + 2) % 3];
+				auto key = std::make_pair(std::min(a, b), std::max(a, b));
+				auto it = firstOpposite.find(key);
+				if (it == firstOpposite.end())
+				{
+					firstOpposite[key] = c;
+					continue;
+				}
+				Edge bend;
+				bend.a = it->second + blob.pointStart;
+				bend.b = c + blob.pointStart;
+				bend.restUnit = length(ico.points[it->second] - ico.points[c]);
+				bend.blob = blobId;
+				myBends.push_back(bend);
+			}
+		}
+	}
+
+	float unitVolume = 0.0f;
+	for (size_t t = 0; t < ico.triangles.size(); t += 3)
+		unitVolume += dot(ico.points[ico.triangles[t]], cross(ico.points[ico.triangles[t + 1]], ico.points[ico.triangles[t + 2]]));
+	blob.unitVolume = unitVolume / 6.0f;
+}
+
+void
+SoftBodySolver::addCube(Blob& blob, const Vec3& centre, int resolution)
+{
+	const CubeLattice& lat = getUnitCubeLattice(resolution);
+	const int32_t blobId = static_cast<int32_t>(myBlobs.size());
+	Mat3 R;
+	quatToMat(blob.quat, R);
+
+	blob.pointStart = static_cast<int32_t>(myX.size());
+	blob.pointCount = static_cast<int32_t>(lat.points.size());
+	blob.surfaceStart = static_cast<int32_t>(mySurfacePoints.size());
+	blob.surfaceCount = static_cast<int32_t>(lat.surfacePoints.size());
+	blob.triStart = static_cast<int32_t>(mySurfaceTriangles.size() / 3);
+	blob.triCount = static_cast<int32_t>(lat.surfaceTriangles.size() / 3);
+	blob.maxUnitEdge = lat.maxSurfaceEdge;
+	blob.unitVolume = 8.0f;
+
+	for (const Vec3& u : lat.points)
+	{
+		myX.push_back(centre + R * (u * blob.radius));
+		myRestUnit.push_back(u);
+		myW.push_back(1.0f);
+		myBlobOf.push_back(blobId);
+	}
+	for (int32_t p : lat.surfacePoints)
+		mySurfacePoints.push_back(p + blob.pointStart);
+	const int32_t vertexStart = static_cast<int32_t>(mySurfaceVertex.size());
+	for (int32_t p : lat.surfaceVertexPoint)
+	{
+		mySurfaceVertex.push_back(p + blob.pointStart);
+		mySurfaceVertexBlob.push_back(blobId);
+	}
+	for (int32_t v : lat.surfaceTriangles)
+		mySurfaceTriangles.push_back(v + vertexStart);
+
+	for (const auto& e : lat.edges)
+	{
+		Edge edge;
+		edge.a = e.first + blob.pointStart;
+		edge.b = e.second + blob.pointStart;
+		edge.restUnit = length(lat.points[e.first] - lat.points[e.second]);
+		edge.blob = blobId;
+		myEdges.push_back(edge);
+	}
+
+	for (size_t t = 0; t < lat.tets.size(); t += 4)
+	{
+		Tet tet;
+		for (int k = 0; k < 4; ++k)
+			tet.p[k] = lat.tets[t + k] + blob.pointStart;
+		const Vec3& x0 = lat.points[lat.tets[t]];
+		tet.restUnit = dot(cross(lat.points[lat.tets[t + 1]] - x0, lat.points[lat.tets[t + 2]] - x0),
+							lat.points[lat.tets[t + 3]] - x0) / 6.0f;
+		tet.blob = blobId;
+		myTets.push_back(tet);
+	}
 }
 
 float
@@ -407,9 +510,9 @@ SoftBodySolver::blobVolume(const Blob& b) const
 	float v = 0.0f;
 	for (int32_t t = b.triStart; t < b.triStart + b.triCount; ++t)
 	{
-		const Vec3& p0 = myX[myTriangles[3 * t]];
-		const Vec3& p1 = myX[myTriangles[3 * t + 1]];
-		const Vec3& p2 = myX[myTriangles[3 * t + 2]];
+		const Vec3& p0 = myX[mySurfaceVertex[mySurfaceTriangles[3 * t]]];
+		const Vec3& p1 = myX[mySurfaceVertex[mySurfaceTriangles[3 * t + 1]]];
+		const Vec3& p2 = myX[mySurfaceVertex[mySurfaceTriangles[3 * t + 2]]];
 		v += dot(p0, cross(p1, p2));
 	}
 	return v / 6.0f;
@@ -418,7 +521,7 @@ SoftBodySolver::blobVolume(const Blob& b) const
 void
 SoftBodySolver::updateCollisionRadii()
 {
-	// A particle of blob A slips through a triangle of blob B if the gap at the triangle centre
+	// A particle of blob A slips through a surface triangle of blob B if the gap at the triangle centre
 	// (edge / sqrt 3) is wider than rA + rB. Edges are strain limited to MaxStretch x rest length,
 	// so rB = 0.58 * longest possible edge - base keeps rA + rB >= edge / sqrt 3 for any blob A.
 	const size_t nb = myBlobs.size();
@@ -453,9 +556,8 @@ SoftBodySolver::growBlobs(float growK, float targetScale)
 	// it outwards, which used to show up as a ripple on fast-growing small blobs.
 	constexpr float MaxStep = 0.02f;	// at most 2% size change per substep
 	bool changed = false;
-	for (size_t bi = 0; bi < myBlobs.size(); ++bi)
+	for (Blob& b : myBlobs)
 	{
-		Blob& b = myBlobs[bi];
 		const float target = std::max(b.target * targetScale, 1e-4f);
 		if (b.radius == target)
 			continue;
@@ -474,7 +576,7 @@ SoftBodySolver::growBlobs(float growK, float targetScale)
 			myX[i] = c + (myX[i] - c) * f;
 
 		b.radius = newRadius;
-		updateBlobScale(b, static_cast<int32_t>(bi));
+		updateBlobScale(b);
 		changed = true;
 	}
 	return changed;
@@ -503,17 +605,22 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 	const float	h = dt / static_cast<float>(substeps);
 	const float	h2 = h * h;
 	const size_t np = myX.size();
+	const bool	cubes = myShape == BlobShape::Cube;
 
 	const float edgeCompliance = complianceFromStiffness(sim.stiffness);
 	// Bending stays out of the stiffest part of the range: even 1 allows gentle curvature changes.
-	const float bendCompliance = sim.bending > 0.0f ? complianceFromStiffness(0.8f * std::clamp(sim.bending, 0.0f, 1.0f)) : -1.0f;
-	// Volume Stiffness 0 should still give a squashy blob, not a deflated bag: use the upper part of the range.
-	const float volCompliance = complianceFromStiffness(0.4f + 0.6f * std::clamp(sim.volumeStiffness, 0.0f, 1.0f));
+	const float bendCompliance = !cubes && sim.bending > 0.0f ? complianceFromStiffness(0.8f * std::clamp(sim.bending, 0.0f, 1.0f)) : -1.0f;
+	// Spheres: Volume Stiffness 0 should still give a squashy blob, not a deflated bag, so use the upper part
+	// of the range. Cubes: 0 turns the tet volumes off; the edges alone still hold the lattice together.
+	const float volCompliance = cubes
+		? (sim.volumeStiffness > 0.0f ? complianceFromStiffness(sim.volumeStiffness) : -1.0f)
+		: complianceFromStiffness(0.4f + 0.6f * std::clamp(sim.volumeStiffness, 0.0f, 1.0f));
 	const float shapeK = std::clamp(sim.shapeMemory, 0.0f, 1.0f);
 	const float shapeKIter = shapeK > 0.0f ? 1.0f - std::pow(1.0f - std::min(shapeK, 0.999f), 1.0f / static_cast<float>(iterations)) : 0.0f;
 	const float friction = std::clamp(sim.friction, 0.0f, 1.0f);
 	const float restitution = std::clamp(sim.restitution, 0.0f, 1.0f);
 	const float dampFactor = std::exp(-std::max(sim.damping, 0.0f) * h);
+	const float pressure = std::max(sim.pressure, 0.01f);
 	const bool	useContainer = container && container->isValid();
 
 	// Grow (or shrink) the blobs' rest size towards their target radius. The targets are scaled
@@ -531,7 +638,7 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 			targets.push_back(b.target);
 			unitVolumes.push_back(b.unitVolume);
 		}
-		const float budget = std::clamp(sim.fill, 0.01f, 0.99f) * container->insideVolume() / std::max(sim.pressure, 0.01f);
+		const float budget = std::clamp(sim.fill, 0.01f, 0.99f) * container->insideVolume() / pressure;
 		targetScale = budgetScale(targets, unitVolumes, myParticleRadius, budget);
 	}
 	myTargetScale = targetScale;
@@ -558,12 +665,12 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 
 		buildContactPairs();
 
-		// Only particles that start the substep near a wall can reach it during the substep.
+		// Only surface particles that start the substep near a wall can reach it during the substep.
 		if (useContainer)
 		{
 			myNearWall.clear();
 			const float reach = 3.0f * myParticleRadius;
-			for (size_t i = 0; i < np; ++i)
+			for (int32_t i : mySurfacePoints)
 			{
 				float travel = length(myX[i] - myPrev[i]);
 				if (container->distance(myX[i]) > -(reach + 2.0f * travel))
@@ -572,6 +679,7 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 		}
 		std::fill(myEdgeLambda.begin(), myEdgeLambda.end(), 0.0f);
 		std::fill(myBendLambda.begin(), myBendLambda.end(), 0.0f);
+		std::fill(myTetLambda.begin(), myTetLambda.end(), 0.0f);
 		std::fill(myVolumeLambda.begin(), myVolumeLambda.end(), 0.0f);
 
 		for (int it = 0; it < iterations; ++it)
@@ -579,7 +687,13 @@ SoftBodySolver::step(float dt, const SimSettings& sim, const ContainerSDF* conta
 			solveEdges(h2, edgeCompliance);
 			if (bendCompliance >= 0.0f)
 				solveBends(h2, bendCompliance);
-			solveVolumes(h2, volCompliance, std::max(sim.pressure, 0.01f));
+			if (cubes)
+			{
+				if (volCompliance >= 0.0f)
+					solveTets(h2, volCompliance, pressure);
+			}
+			else
+				solveVolumes(h2, volCompliance, pressure);
 			if (shapeKIter > 0.0f)
 				solveShapeMatching(shapeKIter);
 			solveContacts(friction);
@@ -631,10 +745,10 @@ SoftBodySolver::buildContactPairs()
 
 	// Counting sort of particles into a hash table.
 	uint32_t tableSize = 64;
-	while (tableSize < 2 * np)
+	while (tableSize < 2 * mySurfacePoints.size())
 		tableSize <<= 1;
 	myCellStart.assign(tableSize + 1, 0);
-	myCellEntries.resize(np);
+	myCellEntries.resize(mySurfacePoints.size());
 
 	auto hashOf = [&](int cx, int cy, int cz)
 	{
@@ -647,18 +761,18 @@ SoftBodySolver::buildContactPairs()
 		cz = static_cast<int>(std::floor(p.z * inv));
 	};
 
-	// Broad phase: only particles inside the (padded) bounding box of another blob can touch it.
+	// Broad phase: only surface particles inside the (padded) bounding box of another blob can touch it.
 	const size_t nb = myBlobs.size();
 	myBlobMin.resize(nb);
 	myBlobMax.resize(nb);
 	for (size_t b = 0; b < nb; ++b)
 	{
 		const Blob& blob = myBlobs[b];
-		Vec3 lo = myX[blob.pointStart], hi = lo;
-		for (int32_t i = blob.pointStart + 1; i < blob.pointStart + blob.pointCount; ++i)
+		Vec3 lo = myX[mySurfacePoints[blob.surfaceStart]], hi = lo;
+		for (int32_t s = blob.surfaceStart + 1; s < blob.surfaceStart + blob.surfaceCount; ++s)
 		{
-			lo = vmin(lo, myX[i]);
-			hi = vmax(hi, myX[i]);
+			lo = vmin(lo, myX[mySurfacePoints[s]]);
+			hi = vmax(hi, myX[mySurfacePoints[s]]);
 		}
 		Vec3 pad(searchDist, searchDist, searchDist);
 		myBlobMin[b] = lo - pad;
@@ -681,8 +795,9 @@ SoftBodySolver::buildContactPairs()
 		if (others.empty())
 			continue;
 		const Blob& blob = myBlobs[b];
-		for (int32_t i = blob.pointStart; i < blob.pointStart + blob.pointCount; ++i)
+		for (int32_t s = blob.surfaceStart; s < blob.surfaceStart + blob.surfaceCount; ++s)
 		{
+			const int32_t i = mySurfacePoints[s];
 			const Vec3& p = myX[i];
 			for (size_t o : others)
 			{
@@ -797,7 +912,6 @@ SoftBodySolver::solveEdges(float h2, float globalCompliance)
 {
 	// Per-blob compliance (blobs may override the global stiffness).
 	thread_local std::vector<float> blobCompliance;
-	blobCompliance.resize(myBlobs.size());
 	thread_local std::vector<float> blobRadius;
 	blobCompliance.resize(myBlobs.size());
 	blobRadius.resize(myBlobs.size());
@@ -846,6 +960,8 @@ SoftBodySolver::solveEdges(float h2, float globalCompliance)
 void
 SoftBodySolver::solveVolumes(float h2, float compliance, float pressure)
 {
+	// Spheres: one constraint on the volume enclosed by the surface. Every sphere particle is its own
+	// surface vertex, so the surface triangles index the particles directly.
 	for (size_t bi = 0; bi < myBlobs.size(); ++bi)
 	{
 		const Blob& b = myBlobs[bi];
@@ -854,7 +970,7 @@ SoftBodySolver::solveVolumes(float h2, float compliance, float pressure)
 		float vol = 0.0f;
 		for (int32_t t = b.triStart; t < b.triStart + b.triCount; ++t)
 		{
-			int32_t i0 = myTriangles[3 * t], i1 = myTriangles[3 * t + 1], i2 = myTriangles[3 * t + 2];
+			int32_t i0 = mySurfaceTriangles[3 * t], i1 = mySurfaceTriangles[3 * t + 1], i2 = mySurfaceTriangles[3 * t + 2];
 			const Vec3& p0 = myX[i0];
 			const Vec3& p1 = myX[i1];
 			const Vec3& p2 = myX[i2];
@@ -881,6 +997,51 @@ SoftBodySolver::solveVolumes(float h2, float compliance, float pressure)
 		myVolumeLambda[bi] += dl;
 		for (int32_t k = 0; k < b.pointCount; ++k)
 			myX[b.pointStart + k] += myScratchGrad[k] * (myW[b.pointStart + k] * dl);
+	}
+}
+
+void
+SoftBodySolver::solveTets(float h2, float compliance, float pressure)
+{
+	thread_local std::vector<float> restScale;
+	restScale.resize(myBlobs.size());
+	for (size_t b = 0; b < myBlobs.size(); ++b)
+	{
+		const float r = myBlobs[b].radius;
+		restScale[b] = pressure * r * r * r;
+	}
+
+	Vec3*			x = myX.data();
+	const float*	w = myW.data();
+	float*			lambda = myTetLambda.data();
+	const float		alphaScale = compliance / h2;
+	for (size_t t = 0; t < myTets.size(); ++t)
+	{
+		const Tet& tet = myTets[t];
+		const Vec3 x0 = x[tet.p[0]];
+		const Vec3 e1 = x[tet.p[1]] - x0, e2 = x[tet.p[2]] - x0, e3 = x[tet.p[3]] - x0;
+
+		// V = e1 . (e2 x e3) / 6, and its gradients with respect to the four corners.
+		Vec3 g[4];
+		g[1] = cross(e2, e3) * (1.0f / 6.0f);
+		g[2] = cross(e3, e1) * (1.0f / 6.0f);
+		g[3] = cross(e1, e2) * (1.0f / 6.0f);
+		g[0] = -(g[1] + g[2] + g[3]);
+		const float vol = dot(e1, g[1]);
+
+		float wsum = 0.0f;
+		for (int k = 0; k < 4; ++k)
+			wsum += w[tet.p[k]] * length2(g[k]);
+		if (wsum <= 1e-30f)
+			continue;
+
+		// An inverted tet has negative volume, so the same constraint turns it back inside out.
+		const float C = vol - tet.restUnit * restScale[tet.blob];
+		const float alpha = wsum * alphaScale;
+		const float dl = (-C - alpha * lambda[t]) / (wsum + alpha);
+		lambda[t] += dl;
+		for (int k = 0; k < 4; ++k)
+			x[tet.p[k]] += g[k] * (w[tet.p[k]] * dl);
 	}
 }
 
@@ -960,19 +1121,112 @@ SoftBodySolver::solveContainer(const ContainerSDF& sdf, float friction)
 }
 
 void
-SoftBodySolver::computeNormals(std::vector<Vec3>& normals) const
+SoftBodySolver::computeSurface(std::vector<Vec3>& positions, std::vector<Vec3>& normals, bool offset,
+								int smoothPasses) const
 {
-	normals.assign(myX.size(), Vec3());
-	for (size_t t = 0; t + 2 < myTriangles.size(); t += 3)
+	// Vertex normals in three steps, so a few folded or stretched triangles can't spoil the shading:
+	// 1. Angle weighting: each triangle counts by its corner angle at the vertex, not its area,
+	//    so one big stretched triangle doesn't outweigh the small ones around it.
+	// 2. Folded triangles are left out: a triangle facing against the neighbourhood's direction has
+	//    been folded over by the simulation, and counting it tilts the normal and darkens the vertex.
+	// 3. Optional smoothing passes average each normal with its neighbours' to soften what's left.
+	// A cube's sides don't share vertices, so all of this stays within a side and the edges stay hard.
+	const std::vector<int32_t>& tris = mySurfaceTriangles;
+	const size_t nv = mySurfaceVertex.size();
+	const size_t nt = tris.size() / 3;
+	auto X = [this](int32_t v) -> const Vec3& { return myX[mySurfaceVertex[v]]; };
+
+	thread_local std::vector<Vec3> faceN, cornerW, firstN;
+	faceN.resize(nt);
+	cornerW.resize(nt);		// x, y, z = corner angle at the triangle's first, second, third vertex
+	for (size_t t = 0; t < nt; ++t)
 	{
-		int32_t a = myTriangles[t], b = myTriangles[t + 1], c = myTriangles[t + 2];
-		Vec3 n = cross(myX[b] - myX[a], myX[c] - myX[a]);	// area weighted
-		normals[a] += n;
-		normals[b] += n;
-		normals[c] += n;
+		const int32_t a = tris[3 * t], b = tris[3 * t + 1], c = tris[3 * t + 2];
+		const Vec3 ab = X(b) - X(a), ac = X(c) - X(a), bc = X(c) - X(b);
+		faceN[t] = normalize(cross(ab, ac));
+		auto angle = [](const Vec3& u, const Vec3& v)
+		{
+			return std::atan2(length(cross(u, v)), dot(u, v));
+		};
+		cornerW[t] = Vec3(angle(ab, ac), angle(bc, ab * -1.0f), angle(ac * -1.0f, bc * -1.0f));
 	}
-	for (Vec3& n : normals)
+
+	auto accumulate = [&](std::vector<Vec3>& out, const std::vector<Vec3>* reference)
+	{
+		out.assign(nv, Vec3());
+		for (size_t t = 0; t < nt; ++t)
+		{
+			const int32_t v[3] = { tris[3 * t], tris[3 * t + 1], tris[3 * t + 2] };
+			const float	  w[3] = { cornerW[t].x, cornerW[t].y, cornerW[t].z };
+			for (int k = 0; k < 3; ++k)
+			{
+				if (reference && dot(faceN[t], (*reference)[v[k]]) < 0.0f)
+					continue;
+				out[v[k]] += faceN[t] * w[k];
+			}
+		}
+	};
+
+	accumulate(firstN, nullptr);
+	for (Vec3& n : firstN)
 		n = normalize(n);
+
+	// Reference direction per vertex: its first estimate averaged with its neighbours'. At a vertex
+	// whose own triangles are mostly folded the first estimate itself points the wrong way; the
+	// neighbourhood still points outward, so this decides reliably which triangles are folded.
+	thread_local std::vector<Vec3> refN;
+	refN = firstN;
+	for (size_t t = 0; t < nt; ++t)
+	{
+		const int32_t a = tris[3 * t], b = tris[3 * t + 1], c = tris[3 * t + 2];
+		refN[a] += firstN[b] + firstN[c];
+		refN[b] += firstN[c] + firstN[a];
+		refN[c] += firstN[a] + firstN[b];
+	}
+	accumulate(normals, &refN);
+	for (size_t i = 0; i < nv; ++i)
+	{
+		// Every triangle around the vertex was folded (or degenerate): use the neighbourhood direction.
+		normals[i] = length2(normals[i]) > 1e-20f ? normalize(normals[i]) : normalize(refN[i]);
+	}
+
+	// Smoothing: each pass averages a normal with its neighbours' through the triangles around it.
+	thread_local std::vector<Vec3> sum;
+	for (int pass = 0; pass < smoothPasses; ++pass)
+	{
+		sum = normals;
+		for (size_t t = 0; t < nt; ++t)
+		{
+			const int32_t a = tris[3 * t], b = tris[3 * t + 1], c = tris[3 * t + 2];
+			sum[a] += normals[b] + normals[c];
+			sum[b] += normals[c] + normals[a];
+			sum[c] += normals[a] + normals[b];
+		}
+		for (size_t i = 0; i < nv; ++i)
+			normals[i] = length2(sum[i]) > 1e-20f ? normalize(sum[i]) : normals[i];
+	}
+
+	positions.resize(nv);
+	if (!offset)
+	{
+		for (size_t v = 0; v < nv; ++v)
+			positions[v] = X(static_cast<int32_t>(v));
+		return;
+	}
+
+	// The particles are spheres of the collision radius, so blobs touch that far outside them. Every vertex
+	// of a particle moves by the same offset, the sum of the normals of its vertices: a sphere point or a point
+	// on a cube side moves out along its normal, a cube edge or corner point diagonally, to where the offset
+	// sides meet. Moving each vertex along its own normal would tear a cube open along its edges.
+	myScratchOffset.assign(myX.size(), Vec3());
+	for (size_t v = 0; v < nv; ++v)
+		myScratchOffset[mySurfaceVertex[v]] += normals[v];
+	for (size_t v = 0; v < nv; ++v)
+	{
+		const int32_t p = mySurfaceVertex[v];
+		const float r = myBlobRadius.empty() ? myParticleRadius : myBlobRadius[myBlobOf[p]];
+		positions[v] = myX[p] + myScratchOffset[p] * r;
+	}
 }
 
 }

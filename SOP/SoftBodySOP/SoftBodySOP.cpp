@@ -201,6 +201,8 @@ SoftBodySOP::execute(SOP_Output* output, const OP_Inputs* inputs, void*)
 	Hasher genHash;
 	// Radius range and seed are not part of the hash: they only change the target radii,
 	// and the blobs grow or shrink towards them without a reset.
+	genHash.value(gen.shape);
+	genHash.value(gen.randomOrientation);
 	genHash.value(gen.edgeLength);
 	genHash.value(gen.minPoints);
 	genHash.value(gen.maxPoints);
@@ -237,30 +239,25 @@ SoftBodySOP::execute(SOP_Output* output, const OP_Inputs* inputs, void*)
 		myWarningString = "No blobs: check that the seed points are inside the container.";
 
 	myOffsetSurface = Parameters::evalSurfaceoffset(inputs);
+	myNormalSmoothing = Parameters::evalNormalsmoothing(inputs);
 	writeOutput(output);
 }
 
 void
 SoftBodySOP::writeOutput(SOP_Output* output)
 {
-	const std::vector<sb::Vec3>& x = mySolver.positions();
-	if (x.empty())
+	if (mySolver.isEmpty())
 		return;
-	const int32_t numPoints = static_cast<int32_t>(x.size());
-
-	mySolver.computeNormals(myNormals);
 
 	// The particles are spheres of the collision radius, so the blobs actually touch that far outside
 	// the simulated points. With Surface Offset the drawn surface is pushed out to there, so touching
 	// blobs look touching instead of leaving a gap of twice the collision radius.
-	std::vector<Position> pos(x.size());
-	for (size_t i = 0; i < x.size(); ++i)
-	{
-		sb::Vec3 p = x[i];
-		if (myOffsetSurface)
-			p += myNormals[i] * mySolver.pointCollisionRadius(i);
-		pos[i] = Position(p.x, p.y, p.z);
-	}
+	mySolver.computeSurface(myPositions, myNormals, myOffsetSurface, myNormalSmoothing);
+	const int32_t numPoints = static_cast<int32_t>(myPositions.size());
+
+	std::vector<Position> pos(myPositions.size());
+	for (size_t i = 0; i < myPositions.size(); ++i)
+		pos[i] = Position(myPositions[i].x, myPositions[i].y, myPositions[i].z);
 	output->addPoints(pos.data(), numPoints);
 
 	std::vector<Vector> normals(myNormals.size());
@@ -271,7 +268,7 @@ SoftBodySOP::writeOutput(SOP_Output* output)
 	// The solver's triangles wind counter-clockwise seen from outside (the volume constraint relies
 	// on that), but TouchDesigner treats clockwise as the front face. Emit them reversed so the
 	// faces point outward and agree with the normals set above.
-	const std::vector<int32_t>& tris = mySolver.triangles();
+	const std::vector<int32_t>& tris = mySolver.surfaceTriangles();
 	myOutTriangles.resize(tris.size());
 	for (size_t t = 0; t + 2 < tris.size(); t += 3)
 	{
@@ -281,7 +278,7 @@ SoftBodySOP::writeOutput(SOP_Output* output)
 	}
 	output->addTriangles(myOutTriangles.data(), static_cast<int32_t>(myOutTriangles.size() / 3));
 
-	const std::vector<int32_t>& ids = mySolver.pointBlobIds();
+	const std::vector<int32_t>& ids = mySolver.surfaceVertexBlobIds();
 	SOP_CustomAttribData blobId("blobid", 1, AttribType::Int);
 	blobId.intData = const_cast<int32_t*>(ids.data());
 	output->setCustomAttribute(&blobId, numPoints);
@@ -309,15 +306,15 @@ SoftBodySOP::pulsePressed(const char* name, void*)
 int32_t
 SoftBodySOP::getNumInfoCHOPChans(void*)
 {
-	return 10;
+	return 11;
 }
 
 void
 SoftBodySOP::getInfoCHOPChan(int32_t index, OP_InfoCHOPChan* chan, void*)
 {
-	static const std::array<const char*, 10> names = {
+	static const std::array<const char*, 11> names = {
 		"blobs", "particles", "contacts", "seeds_outside", "started_small", "step_ms", "container_ms", "volume_ratio", "grow_ratio",
-		"target_scale"
+		"target_scale", "tets"
 	};
 	if (index < 0 || index >= static_cast<int32_t>(names.size()))
 		return;
@@ -334,6 +331,7 @@ SoftBodySOP::getInfoCHOPChan(int32_t index, OP_InfoCHOPChan* chan, void*)
 		case 7: chan->value = mySolver.currentVolumeRatio(); break;
 		case 8: chan->value = mySolver.growRatio(); break;
 		case 9: chan->value = mySolver.targetScale(); break;
+		case 10: chan->value = static_cast<float>(mySolver.numTets()); break;
 		default: break;
 	}
 }

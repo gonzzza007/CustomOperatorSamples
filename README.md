@@ -19,7 +19,7 @@ https://occt3d.com/dev/doc/overview/html/index.html
 
 ## SoftBodySOP
 
-Soft body blobs trapped inside a closed container (e.g. a 1x1x1 box). Input 1 is the container mesh, input 2 the seed points (one blob per point, e.g. from a Sprinkle SOP). XPBD solver with edge, volume and shape-matching constraints, blob-to-blob collisions and a signed distance field for the container. See [SOP/SoftBodySOP/README.md](SOP/SoftBodySOP/README.md).
+Soft body blobs trapped inside a closed container (e.g. a 1x1x1 box): hollow spheres or solid jelly cubes (tetrahedral lattices). Input 1 is the container mesh, input 2 the seed points (one blob per point, e.g. from a Sprinkle SOP). XPBD solver with edge, volume (per blob or per tet) and shape-matching constraints, blob-to-blob collisions and a signed distance field for the container. See [SOP/SoftBodySOP/README.md](SOP/SoftBodySOP/README.md).
 
 ----------------------------------------------------------------
 

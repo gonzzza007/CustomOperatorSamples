@@ -94,6 +94,7 @@
     <ClInclude Include="BitMaskFlags.h" />
     <ClInclude Include="ContainerSDF.h" />
     <ClInclude Include="CPlusPlus_Common.h" />
+    <ClInclude Include="CubeLattice.h" />
     <ClInclude Include="GL_Extensions.h" />
     <ClInclude Include="Icosphere.h" />
     <ClInclude Include="Parameters.h" />
@@ -104,6 +105,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ContainerSDF.cpp" />
+    <ClCompile Include="CubeLattice.cpp" />
     <ClCompile Include="Icosphere.cpp" />
     <ClCompile Include="Parameters.cpp" />
     <ClCompile Include="SoftBodySOP.cpp" />
